@@ -127,6 +127,31 @@
         <div class="s-num" style="color:#ef9a9a">{{ store.dashboard.afterSaleWaiting }}</div>
         <div class="s-lab">售后待补货</div>
       </div>
+      <div class="stat-card budget">
+        <span class="s-icon">💹</span>
+        <div class="s-num budget-n">¥{{ Number(store.dashboard.budgetTotal || 0).toFixed(0) }}</div>
+        <div class="s-lab">生效预算总额</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">📊</span>
+        <div class="s-num" style="color:#ffd54f">¥{{ Number(store.dashboard.budgetUsed || 0).toFixed(0) }}</div>
+        <div class="s-lab">预算实时净占用</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">⏸️</span>
+        <div class="s-num" style="color:#ffb74d">¥{{ Number(store.dashboard.budgetHold || 0).toFixed(0) }}</div>
+        <div class="s-lab">占用中（冻结/在途）</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">🧾</span>
+        <div class="s-num" style="color:#82b1ff">{{ store.dashboard.budgetReviewing + store.dashboard.budgetAdjustPending }}</div>
+        <div class="s-lab">预算财务待审批</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">🚨</span>
+        <div class="s-num" :class="{ 'over-num': store.dashboard.budgetOver > 0 }">{{ store.dashboard.budgetOver }}</div>
+        <div class="s-lab">超限预算</div>
+      </div>
       <div class="stat-card purchase">
         <span class="s-icon">🛒</span>
         <div class="s-num warn">{{ store.dashboard.purchasePending }}</div>
@@ -194,6 +219,22 @@
       </div>
     </div>
 
+    <!-- 营销预算执行 -->
+    <div class="card full budget-card-dash">
+      <div class="card-title">💹 营销预算执行 · {{ store.activeTenant.shortName }}
+        <span class="bd-sub">四类成本（抽奖/积分奖励/兑换权益/采购入库）与供应商结算实时占用，超限硬控</span>
+      </div>
+      <div v-if="budgetViews.length === 0" class="empty">暂无生效预算</div>
+      <div v-for="v in budgetViews" :key="v.budget.id" class="bd-row">
+        <span class="bd-name">{{ v.budget.scope === 'tenant' ? '🏢' : '🎡' }} {{ v.budget.title }}</span>
+        <div class="bd-bar">
+          <i :class="v.state" :style="{ width: Math.min(100, v.percent) + '%' }"></i>
+        </div>
+        <span class="bd-num">¥{{ fmt(v.used) }} / ¥{{ fmt(v.budget.amount) }}</span>
+        <span class="bd-pct" :class="v.state">{{ v.percent }}%</span>
+      </div>
+    </div>
+
     <!-- 活动概览 + 库存 -->
     <div class="dash-cards">
       <div class="card">
@@ -257,6 +298,8 @@ const shipOf = (id) => store.shipmentOfRecord(id)
 const shipMeta = (s) => SHIP_STATUS[s] || { label: s }
 const couponOf = (id) => store.couponOfRecord(id)
 const couponMeta = (s) => COUPON_STATUS[s] || { label: s }
+const budgetViews = computed(() => store.budgetViews)
+const fmt = (n) => (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 // 当前数据上下文租户的活动与业务记录
 const scopedActivities = computed(() => store.activities.filter((a) => a.tenantId === store.activeTenantId))
 const scopedRecords = computed(() =>
@@ -291,16 +334,33 @@ const scopedRecords = computed(() =>
 .stat-card.recon { border-color: rgba(77,182,172,0.35); }
 .stat-card.ship { border-color: rgba(76,175,80,0.35); }
 .stat-card.purchase { border-color: rgba(142,36,170,0.4); }
+.stat-card.budget { border-color: rgba(255,213,79,0.4); }
 .stat-card.coupon { border-color: rgba(171,71,188,0.4); }
 .stat-card.aftersale { border-color: rgba(255,204,128,0.4); }
 .s-num.recon-n { color: #4db6ac; }
 .s-num.coupon-n { color: #ce93d8; }
 .s-num.purchase-n { color: #ce93d8; }
+.s-num.budget-n { color: #ffd54f; }
+.s-num .over-num, .s-num.over-num { color: #ef5350; }
 .s-num.warn { color: #ffb74d; }
 .s-num.ice { color: #81d4fa; }
 .s-num.ok { color: #7ef0c9; }
 .s-num.muted { color: #b0bec5; }
 .s-lab { font-size: 11px; color: #8ba2c8; margin-top: 2px; }
+
+.budget-card-dash .bd-sub { font-size: 11px; font-weight: 400; color: #7e97c2; margin-left: 8px; }
+.bd-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+.bd-name { width: 260px; font-size: 12.5px; color: #dbe4f3; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-bar { flex: 1; height: 10px; border-radius: 5px; background: #0c1730; border: 1px solid rgba(120,160,220,0.2); overflow: hidden; }
+.bd-bar i { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg,#26a69a,#66bb6a); }
+.bd-bar i.warn { background: linear-gradient(90deg,#fb8c00,#fdd835); }
+.bd-bar i.over { background: linear-gradient(90deg,#e53935,#ef5350); }
+.bd-bar i.closed { background: #546e7a; }
+.bd-num { font-size: 11.5px; color: #aebadd; min-width: 170px; text-align: right; }
+.bd-pct { font-size: 12px; font-weight: 800; color: #7ef0c9; min-width: 44px; text-align: right; }
+.bd-pct.warn { color: #ffb74d; }
+.bd-pct.over { color: #ef5350; }
+.bd-pct.closed { color: #90a4ae; }
 
 .dash-cards { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
 @media (max-width: 900px) { .dash-cards { grid-template-columns: 1fr; } }

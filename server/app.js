@@ -10,6 +10,7 @@ import { CouponService } from './services/coupon.js'
 import { ShipService } from './services/ship.js'
 import { PurchaseService } from './services/purchase.js'
 import { SupplierService } from './services/supplier.js'
+import { BudgetService } from './services/budget.js'
 import { TaskService } from './services/task.js'
 import { RiskService, makeDefaultRules } from './services/risk.js'
 import { TradeService } from './services/trade.js'
@@ -28,15 +29,16 @@ export async function createApp(options = {}) {
   const inventory = new InventoryService(k)
   const coupons = new CouponService(k, audit)
   const ship = new ShipService(k, audit, points, inventory)
-  const purchase = new PurchaseService(k, audit, inventory, locks)
-  const supplier = new SupplierService({ k, audit, locks })
-  const tasks = new TaskService(k, audit, points)
-  const risk = new RiskService({ k, audit, points, inventory, coupons, ship, tasks })
-  const trade = new TradeService({ k, locks, audit, points, inventory, coupons, ship, tasks, risk })
+  const budget = new BudgetService({ k, audit, locks })
+  const purchase = new PurchaseService(k, audit, inventory, locks, budget)
+  const supplier = new SupplierService({ k, audit, locks, budget })
+  const tasks = new TaskService(k, audit, points, budget)
+  const risk = new RiskService({ k, audit, points, inventory, coupons, ship, tasks, budget })
+  const trade = new TradeService({ k, locks, audit, points, inventory, coupons, ship, tasks, risk, budget })
   const recon = new ReconService({ k, audit, points, coupons })
   const migration = new MigrationService({ k, audit })
 
-  const app = { k, locks, auth, audit, points, inventory, coupons, ship, purchase, supplier, tasks, risk, trade, recon, migration }
+  const app = { k, locks, auth, audit, points, inventory, coupons, ship, purchase, supplier, budget, tasks, risk, trade, recon, migration }
 
   // 空库引导：写入原生种子（以 upsert/insert 事件入 WAL，重启自动恢复）
   const fresh = k.state.tenants.length === 0 && k.state.activities.length === 0
@@ -69,6 +71,27 @@ async function seedFresh(k) {
   seed.couponTpls.forEach((c) => events.push({ type: 'upsert', table: 'couponTpls', row: c }))
   seed.activities.forEach((a) => events.push({ type: 'upsert', table: 'activities', row: a }))
   seed.goods.forEach((g) => events.push({ type: 'upsert', table: 'goods', row: g }))
+  // 营销预算种子：两个租户各一张生效中的租户总预算
+  const today = k.todayDate()
+  const seedBudgets = [
+    { id: 'seed-bg1', budgetNo: 'BGSEED0001', tenantId: 't-star', traceId: '', scope: 'tenant',
+      activityId: null, activityName: '', title: '星河商贸营销总预算（种子）', amount: 20000, initAmount: 20000,
+      periodStart: today, periodEnd: today, warnRatio: 0.8, status: 'active', enforceHard: true, note: '',
+      applicant: '王星河', applicantId: 'm-star-admin', createdAt: today, time: '09:00:00', ts: k.nowTs(),
+      submittedAt: `${today} 09:00:00`, reviewedAt: `${today} 09:05:00`, reviewer: '财务小周', reviewNote: '同意',
+      activeAt: `${today} 09:05:00`, closedAt: '', version: 1, adjustments: [] },
+    { id: 'seed-bg2', budgetNo: 'BGSEED0002', tenantId: 't-cloud', traceId: '', scope: 'tenant',
+      activityId: null, activityName: '', title: '云雀数科营销总预算（种子）', amount: 8000, initAmount: 8000,
+      periodStart: today, periodEnd: today, warnRatio: 0.8, status: 'active', enforceHard: true, note: '',
+      applicant: '陈云雀', applicantId: 'm-cloud-admin', createdAt: today, time: '09:00:00', ts: k.nowTs(),
+      submittedAt: `${today} 09:00:00`, reviewedAt: `${today} 09:05:00`, reviewer: '财务小许', reviewNote: '同意',
+      activeAt: `${today} 09:05:00`, closedAt: '', version: 1, adjustments: [] }
+  ]
+  seedBudgets.forEach((b) => events.push({ type: 'upsert', table: 'budgets', row: b }))
+  events.push({ type: 'budget-settings.put', tenantId: 't-star',
+    settings: { pointRate: 0.1, enforceHard: true, costMap: {} } })
+  events.push({ type: 'budget-settings.put', tenantId: 't-cloud',
+    settings: { pointRate: 0.1, enforceHard: true, costMap: {} } })
   Object.entries({ 't-star': makeDefaultRules(), 't-cloud': makeDefaultRules() })
     .forEach(([tenantId, rules]) => events.push({ type: 'risk-rules.put', tenantId, rules }))
   for (const e of events) await k.commit([e])

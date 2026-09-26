@@ -10,7 +10,7 @@ export const ROLE_TEMPLATES = [
     key: 'ops_activity', name: '活动运营', builtin: true,
     desc: '负责抽奖活动与积分任务运营，可管理活动、发起奖品/商品采购、发起供应商账单、查看积分台账',
     icon: '🎪',
-    permissions: ['activity:manage', 'points:view', 'ship:trace', 'purchase:apply', 'supplier:bill']
+    permissions: ['activity:manage', 'points:view', 'ship:trace', 'purchase:apply', 'supplier:bill', 'budget:set', 'budget:view']
   },
   {
     key: 'risk_analyst', name: '风控专员', builtin: true,
@@ -26,10 +26,10 @@ export const ROLE_TEMPLATES = [
   },
   {
     key: 'finance_auditor', name: '财务对账', builtin: true,
-    desc: '负责采购审批、供应商账单复核与结算、卡券核销、积分库存对账、复核补偿与全链路审计查看（只读业务运营）',
+    desc: '负责营销预算财务审批、采购审批、供应商账单复核与结算、卡券核销、积分库存对账、复核补偿与全链路审计查看（只读业务运营）',
     icon: '🧮',
     permissions: ['coupon:redeem', 'recon:run', 'recon:review', 'recon:compensate', 'audit:view', 'points:view',
-      'purchase:approve', 'supplier:review', 'supplier:settle']
+      'purchase:approve', 'supplier:review', 'supplier:settle', 'budget:approve', 'budget:view']
   },
   {
     key: 'service_readonly', name: '客服（只读）', builtin: true,
@@ -60,6 +60,9 @@ export const PERMISSION_LABELS = {
   'supplier:bill': '发起供应商账单',
   'supplier:review': '供应商账单复核',
   'supplier:settle': '供应商结算付款',
+  'budget:set': '编制预算与调整申请',
+  'budget:approve': '预算财务审批',
+  'budget:view': '预算台账与成本占用查看',
   'coupon:redeem': '卡券核销',
   'recon:run': '执行对账',
   'recon:review': '对账复核',

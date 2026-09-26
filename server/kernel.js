@@ -25,6 +25,7 @@ export class Kernel {
       shipments: [], afterSales: [],
       purchaseOrders: [], inboundBatches: [],
       acceptDiffs: [], supplierBills: [],
+      budgets: [], budgetAdjusts: [], budgetLedger: [], budgetSettings: {},
       reconBills: [], stockAdjustments: [],
       auditLogs: [],
       migrations: [],      // 历史台账迁移批次（manifest；幂等判重 + 校验和留痕）
@@ -155,6 +156,9 @@ export class Kernel {
       }
       case 'risk-rules.put':
         st.riskRules[e.tenantId] = e.rules
+        break
+      case 'budget-settings.put':
+        st.budgetSettings[e.tenantId] = e.settings
         break
       default:
         throw new Error(`未知事件类型: ${e.type}`)

@@ -34,6 +34,7 @@ export class RiskService {
     this.coupons = deps.coupons
     this.ship = deps.ship
     this.tasks = deps.tasks
+    this.budget = deps.budget || null
   }
 
   rulesOf(tenantId) {
@@ -212,6 +213,12 @@ export class RiskService {
           refId: `release:${rec.id}`, refType: 'risk-release', traceId
         })
         await this._setStage(this.k.state.riskOrders.find((x) => x.id === orderId), 'points')
+        if (this.budget) {
+          const f = this.k.state.pointFlows.find((x) => x.refId === `release:${rec.id}`)
+          await this.budget.chargePoints({ tenantId: tid, points: n, flowId: f.id, refType: 'point-flow',
+            refId: f.id, targetName: o0.targetName, traceId, activityId: o0.activityId,
+            note: `风控放行发奖积分占用：${o0.targetName}` })
+        }
       }
     }
 
@@ -226,6 +233,8 @@ export class RiskService {
       { type: 'upsert', table: 'records', row: { ...rec, status: 'released' } }
     ])
     const rec2 = this.k.state.records.find((r) => r.id === rec.id)
+    // 预算：冻结期 hold 占用转正（reverse 冲回 + actual 补记）
+    if (this.budget) await this.budget.settleHolds(rec2, o1, traceId)
 
     // 4) 发奖：券交付 / 实物发货单（幂等：按 recordId）
     if (!o1.stages.deliver) {
@@ -301,6 +310,9 @@ export class RiskService {
       await this.coupons.addLog('revoke', null, rec, { orderId: o1.id, traceId, tenantId: tid })
       await this._setStage(this.k.state.riskOrders.find((x) => x.id === orderId), 'couponRelease')
     }
+
+    // 预算：冻结期 hold 占用等额冲销（成本积分已返还、权益库存已回补）
+    if (this.budget) await this.budget.reverseHolds(rec, o1, traceId)
 
     if (!this.k.state.riskOrders.find((x) => x.id === orderId).stages.audit) {
       await this.audit.log('revoke', orderId,

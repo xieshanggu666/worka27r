@@ -12,6 +12,7 @@ export class SupplierService {
     this.k = deps.k
     this.audit = deps.audit
     this.locks = deps.locks
+    this.budget = deps.budget || null
   }
 
   requirePo(poId) {
@@ -173,6 +174,15 @@ export class SupplierService {
     const amount = this.amountOfPo(po)
     const pack = this.settleRowsOfPo(po)
     Object.assign(bill0, amount, { rows: pack.rows, reshipPending: pack.reshipPending })
+    // —— 预算硬控：结算净占用 = 实付 − 可冲回的采购入库占用 ——
+    if (this.budget) {
+      const existing = this.k.state.budgetLedger
+        .filter((e) => e.costType === 'purchase' && e.status !== 'reverse' &&
+          this.k.state.inboundBatches.some((b) => b.id === e.refId && b.poId === po.id))
+        .reduce((n, e) => n + e.signedAmount, 0)
+      const net = Math.round(Math.max(0, amount.payableAmount - existing) * 100) / 100
+      if (net > 0) this.budget.ensureCover(po.tenantId, po.activityId || null, net, 'supplier')
+    }
     const at = `${this.k.todayDate()} ${this.k.nowTime()}`
     const targetKey = po.targetType === 'prize' ? `prize:${po.activityId}:${po.targetId}` : `goods:${po.targetId}`
     const writeback = {
@@ -191,6 +201,8 @@ export class SupplierService {
       { type: 'upsert', table: 'supplierBills', row },
       { type: 'upsert', table: 'purchaseOrders', row: poRow }
     ])
+    // 预算占用：采购入库等额转为供应商付款占用（不重复）
+    if (this.budget) await this.budget.chargeSettle(row, bill0.traceId)
     await this.audit.log('supplier-settle', bill0.id,
       `结算付款供应商账单 ${bill0.billNo}【${bill0.targetName}】：供应商 ${bill0.supplierName} 应付 ${row.payableAmount} 元（实收合格 ${row.acceptedQty} × ${row.unitPrice}` +
       (row.reshipQty ? ` − 售后补发占用 ${row.reshipQty} 件 ${row.reshipDeduct} 元` : '') + '）；已按采购批次回写库存对账（到货/合格/验退/短少/补发占用逐批勾稽）' +

@@ -4,11 +4,12 @@
 import { genId, BizError } from '../util.js'
 
 export class PurchaseService {
-  constructor(k, audit, inventory, locks) {
+  constructor(k, audit, inventory, locks, budget = null) {
     this.k = k
     this.audit = audit
     this.inventory = inventory
     this.locks = locks
+    this.budget = budget
   }
 
   requireOrder(poId) {
@@ -158,6 +159,9 @@ export class PurchaseService {
     const target = this.inventory.targetOf(po0.targetType, po0.activityId, po0.targetId)
     const traceId = this.k.newTraceId()
     const batchId = genId('pb')
+    // —— 预算硬控：本批合格入库 × 协议单价实时占用（采购占用在供应商结算时等额转付款，不重复）——
+    const inboundAmount = Math.round(qty * po0.unitPrice * 100) / 100
+    if (this.budget) this.budget.ensureCover(po0.tenantId, po0.activityId || null, inboundAmount, 'purchase')
     const before = t.row.remain
     // 幂等：同一批次 id 的库存抬升只生效一次（崩溃重放/重复提交安全）
     await this.inventory.receive(target, qty, `po-inbound:${batchId}`)
@@ -213,6 +217,7 @@ export class PurchaseService {
       events.push({ type: 'insert', table: 'acceptDiffs', row: d })
     }
     await this.k.commit(events)
+    if (this.budget) await this.budget.chargeInbound(po0, batch, qty, inboundAmount, traceId)
     const diffText = rejectedQty
       ? `；本批到货 ${deliveredRaw}，验退拒收 ${rejectedQty}（不入库，已登记验收差异）` : ''
     await this.audit.log('purchase-inbound', po0.id,

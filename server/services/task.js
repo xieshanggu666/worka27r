@@ -4,10 +4,11 @@
 import { genId } from '../util.js'
 
 export class TaskService {
-  constructor(k, audit, points) {
+  constructor(k, audit, points, budget = null) {
     this.k = k
     this.audit = audit
     this.points = points
+    this.budget = budget
   }
 
   validDrawCount(bizDate, tenantId, userId) {
@@ -56,6 +57,10 @@ export class TaskService {
         source: 'auto', flowId: flow.id
       }
       await this.k.commit([{ type: 'insert', table: 'taskClaims', row: claim }])
+      if (this.budget) {
+        await this.budget.chargePoints({ tenantId, points: t.reward, flowId: flow.id, refType: 'task-claim',
+          refId: claimId, targetName: t.label, traceId, note: `抽奖任务奖励占用：${t.label}（积分折现金）` })
+      }
       await this.audit.log('task-settle', '',
         `【${this.k.state.tenants.find((x) => x.id === tenantId)?.shortName || tenantId}】用户【${userId}】抽奖任务【${t.label}】达成（${date} 有效参与 ${valid}/${t.goal}），自动发放 ${t.reward} 积分${crossDay ? '（跨日审核补计）' : ''}`,
         { tenantId, traceId })

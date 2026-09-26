@@ -12,6 +12,7 @@ const PERMS = {
   shipSend: 'ship:send', shipTrace: 'ship:trace', aftersaleReview: 'aftersale:review',
   purchaseApply: 'purchase:apply', purchaseApprove: 'purchase:approve', purchaseInbound: 'purchase:inbound',
   supplierBill: 'supplier:bill', supplierReview: 'supplier:review', supplierSettle: 'supplier:settle',
+  budgetSet: 'budget:set', budgetApprove: 'budget:approve', budgetView: 'budget:view',
   couponRedeem: 'coupon:redeem',
   reconRun: 'recon:run', reconReview: 'recon:review', reconCompensate: 'recon:compensate',
   activityManage: 'activity:manage'
@@ -166,6 +167,26 @@ async function route(app, req, res, json) {
   }
   if (method === 'GET' && p === '/api/supplier/recon') {
     return json(res, 200, { recon: app.supplier.computeRecon(tid()) })
+  }
+  if (method === 'GET' && p === '/api/budgets') {
+    await requireStaffPerm(app, session, PERMS.budgetView)
+    return json(res, 200, {
+      budgets: app.k.state.budgets.filter((b) => (b.tenantId || 't-star') === tid()).sort((a, b) => b.ts - a.ts),
+      adjusts: app.k.state.budgetAdjusts.filter((b) => (b.tenantId || 't-star') === tid()).sort((a, b) => b.ts - a.ts),
+      views: app.budget.views(tid()),
+      setting: app.budget.settingOf(tid())
+    })
+  }
+  if (method === 'GET' && p === '/api/budgets/ledger') {
+    await requireStaffPerm(app, session, PERMS.budgetView)
+    const costType = u.searchParams.get('costType') || ''
+    let rows = app.k.state.budgetLedger.filter((e) => (e.tenantId || 't-star') === tid())
+    if (costType) rows = rows.filter((e) => e.costType === costType)
+    return json(res, 200, { ledger: rows.sort((a, b) => b.ts - a.ts).slice(0, 300) })
+  }
+  if (method === 'POST' && p === '/api/budgets/preview') {
+    await requireStaffPerm(app, session, PERMS.budgetView)
+    return json(res, 200, { preview: app.budget.previewCharge(tid(), body.activityId || null, Number(body.amount) || 0) })
   }
   if (method === 'GET' && p === '/api/risk/orders') {
     const list = app.k.state.riskOrders
@@ -331,6 +352,55 @@ async function route(app, req, res, json) {
     const bill = await app.supplier.settleBill(body.billId, body.note || '', session)
     return json(res, 200, { ok: true, bill })
   }
+  if (method === 'POST' && p === '/api/budgets/create') {
+    await requireStaffPerm(app, session, PERMS.budgetSet)
+    const row = await app.budget.createBudget(body, session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/submit') {
+    await requireStaffPerm(app, session, PERMS.budgetSet)
+    const cur = app.k.state.budgets.find((x) => x.id === body.budgetId)
+    if (!cur) throw new BizError('BUDGET_NOT_FOUND', '预算不存在', 404)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.submitBudget(body.budgetId, body, session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/review') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const cur = app.k.state.budgets.find((x) => x.id === body.budgetId)
+    if (!cur) throw new BizError('BUDGET_NOT_FOUND', '预算不存在', 404)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.reviewBudget(body.budgetId, !!body.approve, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/close') {
+    const cur = app.k.state.budgets.find((x) => x.id === body.budgetId)
+    if (!cur) throw new BizError('BUDGET_NOT_FOUND', '预算不存在', 404)
+    if (!(app.auth.can(session, 'budget:set') || app.auth.can(session, 'budget:approve'))) {
+      await requireStaffPerm(app, session, PERMS.budgetApprove)
+    }
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.closeBudget(body.budgetId, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/adjusts/create') {
+    await requireStaffPerm(app, session, PERMS.budgetSet)
+    const cur = app.k.state.budgets.find((x) => x.id === body.budgetId)
+    if (!cur) throw new BizError('BUDGET_NOT_FOUND', '预算不存在', 404)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.requestAdjust(body.budgetId, body, session)
+    return json(res, 200, { ok: true, adjust: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/adjusts/review') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const row = await app.budget.reviewAdjust(body.adjustId, !!body.approve, body.note || '', session)
+    return json(res, 200, { ok: true, adjust: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/setting') {
+    await requireStaffPerm(app, session, PERMS.budgetSet)
+    const setting = await app.budget.updateSetting(body, session)
+    return json(res, 200, { ok: true, setting })
+  }
   if (method === 'POST' && p === '/api/coupons/redeem') {
     await requireStaffPerm(app, session, PERMS.couponRedeem)
     const r = await app.coupons.redeem(body.code, session, body)
@@ -461,6 +531,14 @@ function dashboard(app, tid) {
     supplierSettled: app.k.state.supplierBills.filter((b) => inT(b) && b.status === 'settled').length,
     supplierPaid: app.k.state.supplierBills.filter((b) => inT(b) && b.status === 'settled').reduce((n, b) => n + (b.payableAmount || 0), 0),
     reconBills: app.k.state.reconBills.filter((b) => inT(b)).length,
-    reconOpen: app.k.state.reconBills.filter((b) => inT(b) && ['pending', 'reviewed'].includes(b.status)).length
+    reconOpen: app.k.state.reconBills.filter((b) => inT(b) && ['pending', 'reviewed'].includes(b.status)).length,
+    budgetCount: app.k.state.budgets.filter((b) => inT(b) && ['active', 'reviewing', 'closed'].includes(b.status)).length,
+    budgetReviewing: app.k.state.budgets.filter((b) => inT(b) && b.status === 'reviewing').length,
+    budgetAdjustPending: app.k.state.budgetAdjusts.filter((b) => inT(b) && b.status === 'pending').length,
+    budgetTotal: app.k.state.budgets.filter((b) => inT(b) && b.status === 'active').reduce((n, b) => n + b.amount, 0),
+    budgetUsed: app.k.state.budgetLedger.filter((e) => inT(e)).reduce((n, e) => n + e.signedAmount, 0),
+    budgetHold: app.budget.holdNetOfRows(app.k.state.budgetLedger.filter(inT)),
+    budgetActual: app.k.state.budgetLedger.filter((e) => inT(e) && e.status === 'actual').reduce((n, e) => n + e.signedAmount, 0),
+    budgetOver: app.budget.views(tid).filter((v) => v.state === 'over').length
   }
 }

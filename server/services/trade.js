@@ -29,6 +29,7 @@ export class TradeService {
     this.ship = deps.ship
     this.tasks = deps.tasks
     this.risk = deps.risk
+    this.budget = deps.budget || null
   }
 
   // 业务日切换：到期扫描 + 兜底结算上一业务日全部用户的抽奖任务（幂等），保留冻结权益支持跨日审核
@@ -152,6 +153,16 @@ export class TradeService {
         refId: `draw-reward:${rec.id}`, refType: 'trade', traceId: rec.traceId
       })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'rewardPoints')
+      if (this.budget) {
+        const f = this.k.state.pointFlows.find((x) => x.refId === `draw-reward:${rec.id}`)
+        await this.budget.chargePoints({ tenantId: act.tenantId, points: pointDelta, flowId: f.id,
+          refType: 'point-flow', refId: f.id, targetName: prize.name, traceId: rec.traceId, activityId: act.id,
+          note: `抽奖中奖积分奖励占用：${prize.name}` })
+      }
+    }
+    if (this.budget) {
+      await this.budget.chargeDrawCost(rec, act, 'actual', rec.traceId)
+      await this.budget.chargePrizeGoods(rec, 'actual', rec.traceId)
     }
     // 4) 终态 normal
     const cur2 = this.k.state.records.find((r) => r.id === rec.id)
@@ -205,6 +216,10 @@ export class TradeService {
     if (prize.couponId && !cur.stages.couponHold) {
       await this.coupons.addLog('hold', null, cur, { orderId: order.id, traceId: rec.traceId, tenantId: act.tenantId })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'couponHold')
+    }
+    if (this.budget) {
+      await this.budget.chargeDrawCost(rec, act, 'hold', rec.traceId)
+      await this.budget.chargePrizeGoods(rec, 'hold', rec.traceId)
     }
     await this.k.commit([{
       type: 'upsert', table: 'records',
@@ -270,6 +285,7 @@ export class TradeService {
     }
     const cur = this.k.state.records.find((r) => r.id === rec.id)
     await this.k.commit([{ type: 'upsert', table: 'records', row: { ...cur, status: 'normal', processing: false } }])
+    if (this.budget) await this.budget.chargePrizeGoods(rec, 'actual', rec.traceId)
     if (!cur.stages.audit) {
       await this.audit.log('redeem', rec.id, `积分兑换【${g.name}】，扣减 ${g.cost} 积分`,
         { tenantId: g.tenantId, ctx, traceId: rec.traceId })
@@ -311,6 +327,7 @@ export class TradeService {
       await this.coupons.addLog('hold', null, cur, { orderId: order.id, traceId: rec.traceId, tenantId: g.tenantId })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'couponHold')
     }
+    if (this.budget) await this.budget.chargePrizeGoods(rec, 'hold', rec.traceId)
     await this.k.commit([{
       type: 'upsert', table: 'records',
       row: { ...this.k.state.records.find((r) => r.id === rec.id), status: 'frozen', riskOrderId: order.id, processing: false }

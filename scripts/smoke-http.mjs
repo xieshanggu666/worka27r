@@ -193,6 +193,35 @@ async function main() {
   const settleDup = await api('POST', '/api/supplier/bills/settle', { token: finToken, body: { billId } })
   assert(settleDup.status === 409, '重复结算 409')
 
+  console.log('— 营销预算 API：RBAC + 编制/审批/台账/超限硬控 —')
+  const custBudgets = await api('GET', '/api/budgets', { token })
+  assert(custBudgets.status === 403, '消费者查询预算 403（budget:view）')
+  const opsCreate = await api('POST', '/api/budgets/create', {
+    token: opsToken,
+    body: { scope: 'activity', activityId: 'act-2', title: 'HTTP 预算冒烟', amount: 100,
+      periodStart: '2027-01-01', periodEnd: '2027-03-31', submit: true }
+  })
+  assert(opsCreate.status === 200 && opsCreate.json.budget.status === 'reviewing', '运营编制预算 → reviewing')
+  const httpBudgetId = opsCreate.json.budget.id
+  const bOpsReview = await api('POST', '/api/budgets/review', { token: opsToken, body: { budgetId: httpBudgetId, approve: true } })
+  assert(bOpsReview.status === 403, '运营审批预算 403（budget:approve）')
+  const finReview = await api('POST', '/api/budgets/review', { token: finToken, body: { budgetId: httpBudgetId, approve: true } })
+  assert(finReview.status === 200 && finReview.json.budget.status === 'active', '财务审批通过 → active')
+  const adjRes = await api('POST', '/api/budgets/adjusts/create', {
+    token: opsToken, body: { budgetId: httpBudgetId, type: 'increase', delta: 50, reason: 'HTTP 追加' }
+  })
+  assert(adjRes.status === 200 && adjRes.json.adjust.status === 'pending', '运营发起追加调整 → pending')
+  const adjReview = await api('POST', '/api/budgets/adjusts/review', { token: finToken, body: { adjustId: adjRes.json.adjust.id, approve: true } })
+  assert(adjReview.status === 200, '财务通过调整')
+  const list = await api('GET', '/api/budgets', { token: finToken })
+  const found = list.json.budgets.find((b) => b.id === httpBudgetId)
+  assert(found && found.amount === 150, 'GET /api/budgets 金额已调整为 150')
+  // 超限硬控：150 元预算下再验收入库 g3（单价 15，10 件=150，已在前面采购链路验过 10 件 → 这里验证预览接口）
+  const preview = await api('POST', '/api/budgets/preview', { token: finToken, body: { activityId: 'act-2', amount: 99999 } })
+  assert(preview.status === 200 && preview.json.preview.over === true, '预算预览：超额占用检出 over=true')
+  const ledgerRes = await api('GET', '/api/budgets/ledger?costType=purchase', { token: finToken })
+  assert(ledgerRes.status === 200 && Array.isArray(ledgerRes.json.ledger), 'GET 预算占用台账（采购口径）')
+
   console.log('— 故障注入 → 重启 → 启动自动续办 —')
   // 平台在抽奖扣分后注入故障，触发一次 act-2 抽奖（10 积分）应返回 500
   await api('POST', '/api/admin/fault', { token: pToken, body: { name: 'draw.afterCost' } })

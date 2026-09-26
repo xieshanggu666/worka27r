@@ -20,7 +20,12 @@ const ACTION_LABELS = {
   'accept-diff-short': '登记到货短少', 'accept-diff-reject': '登记验退拒收',
   'day-rollover': '业务日切换',
   'saga-resume': '故障续办', 'migration-run': '历史台账迁移',
-  'activity-create': '新建活动', 'activity-toggle': '活动状态变更'
+  'activity-create': '新建活动', 'activity-toggle': '活动状态变更',
+  'budget-create': '编制预算', 'budget-submit': '提交预算审批',
+  'budget-approve': '预算审批通过', 'budget-reject': '预算审批驳回',
+  'budget-close': '预算封存', 'budget-setting': '预算参数变更',
+  'budget-adjust-apply': '预算调整申请', 'budget-adjust-approve': '预算调整通过', 'budget-adjust-reject': '预算调整驳回',
+  'budget-exceeded': '预算超限拦截', 'budget-overrun': '预算超限预警'
 }
 
 const PREFIX_MODULE = [
@@ -31,6 +36,7 @@ const PREFIX_MODULE = [
   ['ship-', 'ship'], ['aftersale-', 'aftersale'],
   ['accept-', 'purchase'],
   ['supplier-', 'supplier'],
+  ['budget-', 'budget'],
   ['coupon-', 'coupon'], ['recon-', 'recon'], ['migration-', 'recon'],
   ['saga-resume', 'system'], ['day-rollover', 'system']
 ]
