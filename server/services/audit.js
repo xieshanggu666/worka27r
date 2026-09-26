@@ -18,6 +18,10 @@ const ACTION_LABELS = {
   'supplier-bill-reject': '账单复核驳回', 'supplier-settle': '供应商结算付款',
   'supplier-bill-pending-reship': '账单补发待履约提示', 'supplier-recon-reship': '结算补发对账回写',
   'accept-diff-short': '登记到货短少', 'accept-diff-reject': '登记验退拒收',
+  'budget-apply': '编制预算', 'budget-approve': '预算审批通过', 'budget-reject': '预算审批驳回',
+  'budget-cancel': '撤销预算', 'budget-freeze': '冻结预算', 'budget-activate': '解冻预算',
+  'budget-close': '关闭预算', 'budget-adjust-apply': '预算调整申请', 'budget-adjust-approve': '预算调整通过',
+  'budget-adjust-reject': '预算调整驳回',
   'day-rollover': '业务日切换',
   'saga-resume': '故障续办', 'migration-run': '历史台账迁移',
   'activity-create': '新建活动', 'activity-toggle': '活动状态变更'
@@ -30,6 +34,7 @@ const PREFIX_MODULE = [
   ['task-settle', 'points'],
   ['ship-', 'ship'], ['aftersale-', 'aftersale'],
   ['accept-', 'purchase'],
+  ['budget-', 'budget'],
   ['supplier-', 'supplier'],
   ['coupon-', 'coupon'], ['recon-', 'recon'], ['migration-', 'recon'],
   ['saga-resume', 'system'], ['day-rollover', 'system']

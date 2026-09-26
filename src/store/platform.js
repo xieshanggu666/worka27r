@@ -146,6 +146,39 @@ export const COUPON_STATUS = {
   expired: { label: '已过期', tone: 'bad' }
 }
 
+// 营销预算单状态文案与样式标记
+// pending 待财务审批 → active 生效（实时占用控制）；另可 reject 驳回 / cancel 申请人撤销 /
+// freeze 冻结（暂停新增占用）→ activate 解冻；active/frozen → closed 关闭（终态，历史台账保留）
+export const BUDGET_STATUS = {
+  pending: { label: '待财务审批', tone: 'warn' },
+  active: { label: '生效中', tone: 'ok' },
+  rejected: { label: '已驳回', tone: 'bad' },
+  frozen: { label: '已冻结', tone: 'bad' },
+  closed: { label: '已关闭', tone: 'muted' },
+  canceled: { label: '已撤销', tone: 'muted' }
+}
+// 预算币种：points 积分预算（抽奖成本/积分奖励/兑换成本/任务奖励）｜ money 资金预算（采购/供应商付款/售后补发）
+export const BUDGET_UNITS = {
+  points: { label: '积分预算', unit: '积分' },
+  money: { label: '资金预算', unit: '元' }
+}
+// 预算台账占用方向
+export const BUDGET_DIRECTIONS = {
+  reserve: { label: '预占', tone: 'warn' },
+  settle: { label: '实际成本', tone: 'ok' },
+  release: { label: '预占释放', tone: 'info' },
+  refund: { label: '成本冲回', tone: 'info' }
+}
+// 成本类别
+export const BUDGET_CATEGORIES = {
+  draw: '抽奖成本',
+  redeem: '兑换成本',
+  points: '积分奖励',
+  purchase: '采购承诺',
+  supplier: '供应商付款',
+  reship: '售后补发'
+}
+
 // ===== 多租户与权限中心常量 =====
 export const MEMBER_STATUS = {
   active: { label: '在职', tone: 'ok' },
@@ -164,6 +197,7 @@ export const AUDIT_MODULES = {
   aftersale: '售后闭环',
   purchase: '采购入库',
   supplier: '供应商结算',
+  budget: '预算成本',
   coupon: '卡券核销',
   recon: '积分库存对账',
   system: '系统'
@@ -179,6 +213,7 @@ const ACTION_MODULE_PREFIX = [
   ['aftersale-', 'aftersale'],
   ['purchase-', 'purchase'], ['po-', 'purchase'],
   ['accept-', 'purchase'],
+  ['budget-', 'budget'],
   ['supplier-', 'supplier'], ['settle-', 'supplier'],
   ['coupon-', 'coupon'],
   ['recon-', 'recon'],
@@ -215,6 +250,8 @@ export const usePlatformStore = defineStore('platform', {
     inboundBatches: [],         // 采购验收批次（append-only）：{ poId, qty, remainBefore/After, acceptedInbound }
     acceptDiffs: [],            // 验收差异（append-only）：到货短少/验退拒收，按采购批次登记并回写采购单
     supplierBills: [],          // 供应商账单/结算单（append-only）：运营按采购单拟单、财务复核与结算，按批次/售后补发回写库存对账
+    budgets: [],                // 营销预算单（append-only 审批流）：按租户/活动 × 积分/资金设预算，财务审批后参与实时占用控制
+    budgetLedger: [],           // 预算占用台账（append-only）：reserve 预占 / settle 实际成本 / release 释放 / refund 冲回，effectId 幂等
     auditLogs: [],              // 操作记录（审计日志）
     reconBills: [],             // 积分库存对账差异单（按业务日，append-only 保留执行/复核/补偿痕迹）
     stockAdjustments: [],       // 库存校正台账（append-only）：对账补偿对 remain 的修正凭证
@@ -402,7 +439,20 @@ export const usePlatformStore = defineStore('platform', {
           couponAvailable: s.coupons.filter((c) => inT(c) && c.status === 'available').length,
           couponRedeemed: s.coupons.filter((c) => inT(c) && c.status === 'redeemed').length,
           couponExpired: s.coupons.filter((c) => inT(c) && c.status === 'expired').length,
-          couponHeld: recordsT.filter((r) => r.status === 'frozen' && r.couponId).length
+          couponHeld: recordsT.filter((r) => r.status === 'frozen' && r.couponId).length,
+          // 营销预算看板：预算单 / 待审批 / 生效 / 冻结 / 超支 / 预警 / 累计占用
+          budgetTotal: s.budgets.filter(inT).length,
+          budgetPending: s.budgets.filter((b) => inT(b) && b.status === 'pending').length,
+          budgetActive: s.budgets.filter((b) => inT(b) && b.status === 'active').length,
+          budgetFrozen: s.budgets.filter((b) => inT(b) && b.status === 'frozen').length,
+          budgetOverrun: this.budgetCards.filter((c) => (c.tenantId || 't-star') === tid && c.overrun).length,
+          budgetNearWarn: this.budgetCards.filter((c) => (c.tenantId || 't-star') === tid && c.nearWarn).length,
+          budgetOccupiedPoints: this.budgetCards
+            .filter((c) => (c.tenantId || 't-star') === tid && c.unit === 'points')
+            .reduce((n, c) => n + c.occupied, 0),
+          budgetOccupiedMoney: this.budgetCards
+            .filter((c) => (c.tenantId || 't-star') === tid && c.unit === 'money')
+            .reduce((n, c) => n + c.occupied, 0)
         }
       }
     },
@@ -608,6 +658,71 @@ export const usePlatformStore = defineStore('platform', {
       return s.afterSales.filter(
         (a) => a.userId === s.user.id && (a.tenantId || 't-star') === s.activeTenantId && a.status === 'pending'
       ).length
+    },
+    // ===== 营销预算与成本控制 =====
+    // 当前租户全部预算单（最新在前）
+    scopedBudgets(s) {
+      return s.budgets.filter((b) => (b.tenantId || 't-star') === s.activeTenantId)
+    },
+    scopedBudgetLedger(s) {
+      return s.budgetLedger.filter((l) => (l.tenantId || 't-star') === s.activeTenantId)
+    },
+    // 预算占用汇总（纯推导）：reserved 未核销预占；committed 实际成本（settle − refund 冲回）
+    budgetSummary(s) {
+      return (budgetId) => {
+        const rows = s.budgetLedger.filter((l) => l.budgetId === budgetId)
+        const convertedIds = new Set(rows.filter((l) => l.reserveOf).map((l) => l.reserveOf))
+        let reserved = 0
+        let committed = 0
+        const byCategory = {}
+        rows.forEach((l) => {
+          if (l.direction === 'reserve' && !convertedIds.has(l.id)) {
+            reserved += l.amount
+            byCategory[l.category] = (byCategory[l.category] || 0) + l.amount
+          } else if (l.direction === 'settle') {
+            committed += l.amount
+            byCategory[l.category] = (byCategory[l.category] || 0) + l.amount
+          } else if (l.direction === 'refund') {
+            committed -= l.amount
+            byCategory[l.category] = (byCategory[l.category] || 0) - l.amount
+          }
+        })
+        const r2 = (n) => Math.round(n * 100) / 100
+        return {
+          reserved: r2(reserved), committed: r2(committed), occupied: r2(reserved + committed),
+          available: r2(Math.max(0, (s.budgets.find((x) => x.id === budgetId)?.amount || 0) - r2(reserved + committed))),
+          byCategory, rows: rows.length
+        }
+      }
+    },
+    // 预算卡片（含占用汇总与超支/预警状态）
+    budgetCards(s) {
+      const inT = (b) => (b.tenantId || 't-star') === s.activeTenantId
+      return s.budgets.filter(inT).map((b) => {
+        const sum = this.budgetSummary(b.id)
+        const available = Math.round((b.amount - sum.occupied) * 100) / 100
+        const ratio = b.amount > 0 ? sum.occupied / b.amount : 0
+        return {
+          ...b, ...sum, available, ratio,
+          overrun: sum.occupied > b.amount + 1e-6,
+          nearWarn: b.status === 'active' && sum.occupied <= b.amount + 1e-6 && ratio >= 0.8
+        }
+      }).sort((a, b) => b.ts - a.ts)
+    },
+    // 财务待审批预算数（含预算调整待审批）
+    pendingBudgetCount(s) {
+      const list = s.budgets.filter((b) => (b.tenantId || 't-star') === s.activeTenantId)
+      return list.filter((b) => b.status === 'pending').length +
+        list.reduce((n, b) => n + (b.adjustments || []).filter((a) => a.status === 'pending').length, 0)
+    },
+    // 预算 Tab 角标：财务看待审批；运营/财务看超支+预警
+    budgetTodoCount(s) {
+      if (s.role !== 'operator') return 0
+      if (s.can('budget:approve')) {
+        return this.pendingBudgetCount + this.budgetCards.filter((c) => c.overrun).length
+      }
+      if (s.can('budget:manage')) return this.budgetCards.filter((c) => c.overrun || c.nearWarn).length
+      return 0
     },
     // ===== 卡券账户 =====
     // 卡券模板（按 id 索引；含两个租户的全部模板）
@@ -1110,7 +1225,17 @@ export const usePlatformStore = defineStore('platform', {
           'coupon-release': '预占释放',
           'coupon-redeem': '卡券核销',
           'coupon-expire': '卡券到期',
-          'coupon-comp': '卡券补券'
+          'coupon-comp': '卡券补券',
+          'budget-apply': '编制预算',
+          'budget-approve': '预算审批通过',
+          'budget-reject': '预算审批驳回',
+          'budget-cancel': '撤销预算',
+          'budget-freeze': '冻结预算',
+          'budget-activate': '解冻预算',
+          'budget-close': '关闭预算',
+          'budget-adjust-apply': '预算调整申请',
+          'budget-adjust-approve': '预算调整通过',
+          'budget-adjust-reject': '预算调整驳回'
         }[action] || action,
         module: moduleOfAction(action, extra.module),
         orderId: orderId || '',
@@ -1216,6 +1341,14 @@ export const usePlatformStore = defineStore('platform', {
           source: 'auto',
           flowId: flow.id
         })
+        // 营销预算占用：任务积分奖励实时占用租户积分预算（按台账 id 幂等）
+        this._budgetOccupy('settle',
+          [{ unit: 'points', amount: t.reward, scopeType: 'tenant', scopeId: tid, category: 'points', kind: 'task-reward' }],
+          {
+            category: 'points', kind: 'task-reward', refType: 'task-claim',
+            refId: claimId, bizNo: t.label, summary: `任务奖励：${t.label} +${t.reward} 积分`,
+            userId: this.user.id
+          }, tid)
         this.addAuditLog('task-settle', null,
           `【${this.tenants.find((x) => x.id === tid)?.shortName || tid}】抽奖任务【${t.label}】达成（${date} 有效参与 ${valid}/${t.goal}），自动发放 ${t.reward} 积分${crossDay ? '（跨日审核补计）' : ''}`,
           { module: 'points', tenantId: tid })
@@ -1270,8 +1403,11 @@ export const usePlatformStore = defineStore('platform', {
 
       // 风控评估（在任何扣减发生之前，杜绝部分扣减）
       const riskHits = this.evalDrawRisk(act, prize)
+      // 营销预算预检：以实际抽中奖品为准（成本+积分奖励同时占用），超额/冻结整笔拦截
+      const budgetItems = this._drawBudgetItems(act, prize, cost)
+      if (!this._budgetGuard(budgetItems, act.tenantId)) { this.endTrace(); return null }
       if (riskHits.length) {
-        const frozen = this.freezeDraw(act, prize, cost, riskHits)
+        const frozen = this.freezeDraw(act, prize, cost, riskHits, { budgetItems })
         this.endTrace()
         return frozen
       }
@@ -1313,6 +1449,12 @@ export const usePlatformStore = defineStore('platform', {
       }
       this.records.unshift(rec)
       if (pointDelta) this.addPointRecord(pointDelta, `抽奖获得：${prize.name}`, 'reward', { tenantId: act.tenantId, traceId: trace })
+      // 营销预算实时占用：抽奖成本 + 积分奖励（正常落账，按记录凭证幂等）
+      this._budgetOccupy('settle', budgetItems, {
+        category: 'draw', kind: 'draw-cost', refType: 'record',
+        refId: rec.id, bizNo: act.name, summary: `抽奖成本/积分奖励：【${act.name}】抽中【${prize.name}】`,
+        userId: rec.userId, traceId: trace
+      }, act.tenantId)
       this.addAuditLog('draw', rec.id,
         `参与抽奖【${act.name}】抽中【${prize.name}】${cost ? `，消耗 ${cost} 积分` : '（免费）'}`,
         { module: 'activity', tenantId: act.tenantId, traceId: trace })
@@ -1331,8 +1473,9 @@ export const usePlatformStore = defineStore('platform', {
     },
 
     // 冻结抽奖：占用成本积分 + 预占奖品库存，建立审核单
-    freezeDraw(act, prize, cost, riskHits) {
+    freezeDraw(act, prize, cost, riskHits, opts = {}) {
       const trace = currentTrace || this.beginTrace()
+      const traceId = trace
       if (cost > 0) {
         this.points -= cost
         this.addPointRecord(-cost, `冻结：参与【${act.name}】待风控审核`, 'frozen', { tenantId: act.tenantId, traceId: trace })
@@ -1362,6 +1505,12 @@ export const usePlatformStore = defineStore('platform', {
         icon: prize.emoji
       }
       this.records.unshift(rec)
+      // 营销预算预占：冻结中的抽奖成本/积分奖励（放行核销、撤销释放，按记录凭证幂等）
+      this._budgetOccupy('reserve', opts.budgetItems || this._drawBudgetItems(act, prize, cost), {
+        category: 'draw', kind: 'draw-cost', refType: 'record',
+        refId: rec.id, bizNo: act.name, summary: `风控冻结预占：抽奖【${act.name}】【${prize.name}】`,
+        userId: rec.userId, traceId
+      }, act.tenantId)
       const order = this.createRiskOrder({
         bizType: 'draw',
         recordId: rec.id,
@@ -1399,9 +1548,19 @@ export const usePlatformStore = defineStore('platform', {
       const t = this.tasks.find((x) => x.id === taskId)
       if (!t || t.claimed || !t.done) return
       if (t.metric === 'draw') return // 抽奖任务奖励仅由 settleDrawTasks 发放
+      const tid = this.activeTenantId
+      // 营销预算预检：手动任务奖励占用租户积分预算
+      if (!this._budgetGuard([{ unit: 'points', amount: t.reward, scopeType: 'tenant', scopeId: tid, category: 'points', kind: 'task-reward' }], tid)) return
       t.claimed = true
       this.points += t.reward
       this.addPointRecord(t.reward, `完成任务：${t.label}`, 'reward')
+      this._budgetOccupy('settle',
+        [{ unit: 'points', amount: t.reward, scopeType: 'tenant', scopeId: tid, category: 'points', kind: 'task-reward' }],
+        {
+          category: 'points', kind: 'task-reward', refType: 'task-manual',
+          refId: `${t.id}:${this.todayDate}:${this.user.id}`, bizNo: t.label,
+          summary: `任务奖励：${t.label} +${t.reward} 积分`, userId: this.user.id
+        }, tid)
       this.showToast(`获得 ${t.reward} 积分`, 'success')
     },
     // 一键签到
@@ -1413,6 +1572,7 @@ export const usePlatformStore = defineStore('platform', {
     redeem(goodsId) {
       this.syncBusinessDay()
       const trace = this.beginTrace()
+      const traceId = trace
       const g = this.goods.find((x) => x.id === goodsId)
       if (!g || (g.tenantId || 't-star') !== this.activeTenantId) {
         this.showToast('商品不存在或不属于当前租户', 'warn')
@@ -1432,8 +1592,11 @@ export const usePlatformStore = defineStore('platform', {
 
       // 风控评估（扣减前）
       const riskHits = this.evalRedeemRisk(g)
+      // 营销预算预检：兑换成本超出租户积分预算（或预算冻结关闭）时整笔拦截
+      const budgetItems = this._redeemBudgetItems(g)
+      if (!this._budgetGuard(budgetItems, g.tenantId)) { this.endTrace(); return null }
       if (riskHits.length) {
-        const frozen = this.freezeRedeem(g, riskHits)
+        const frozen = this.freezeRedeem(g, riskHits, { budgetItems })
         this.endTrace()
         return frozen
       }
@@ -1458,6 +1621,12 @@ export const usePlatformStore = defineStore('platform', {
         icon: g.icon
       }
       this.records.unshift(rec)
+      // 营销预算实时占用：兑换成本（按记录凭证幂等）
+      this._budgetOccupy('settle', budgetItems, {
+        category: 'redeem', kind: 'redeem-cost', refType: 'record',
+        refId: rec.id, bizNo: g.name, summary: `积分兑换成本：【${g.name}】×${g.cost} 积分`,
+        userId: rec.userId, traceId
+      }, g.tenantId)
       this.addAuditLog('redeem', rec.id, `积分兑换【${g.name}】，扣减 ${g.cost} 积分`, { module: 'points', tenantId: g.tenantId, traceId: trace })
       // 券类商品：发券至卡券账户；实物商品生成发货单（其余虚拟权益直接到账）
       const coupon = this.issueCouponForRecord(rec)
@@ -1470,8 +1639,9 @@ export const usePlatformStore = defineStore('platform', {
     },
 
     // 冻结兑换：占用积分 + 预占商品库存
-    freezeRedeem(g, riskHits) {
+    freezeRedeem(g, riskHits, opts = {}) {
       const trace = currentTrace || this.beginTrace()
+      const traceId = trace
       this.points -= g.cost
       g.remain -= 1
       g.frozen += 1
@@ -1493,6 +1663,12 @@ export const usePlatformStore = defineStore('platform', {
         icon: g.icon
       }
       this.records.unshift(rec)
+      // 营销预算预占：冻结中的兑换成本（放行核销、撤销释放）
+      this._budgetOccupy('reserve', opts.budgetItems || this._redeemBudgetItems(g), {
+        category: 'redeem', kind: 'redeem-cost', refType: 'record',
+        refId: rec.id, bizNo: g.name, summary: `风控冻结预占：积分兑换【${g.name}】×${g.cost} 积分`,
+        userId: rec.userId, traceId
+      }, g.tenantId)
       const order = this.createRiskOrder({
         bizType: 'redeem',
         recordId: rec.id,
@@ -1583,6 +1759,7 @@ export const usePlatformStore = defineStore('platform', {
     releaseRisk(orderId, note = '') {
       this.syncBusinessDay()
       const trace = this.beginTrace()
+      const traceId = trace
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) { this.endTrace(); return }
       if (!this.requirePerm('risk:review', 'risk') || !this.requireSameTenant(o.tenantId, 'risk')) {
@@ -1626,6 +1803,11 @@ export const usePlatformStore = defineStore('platform', {
       o.reviewer = this.user.name
       o.reviewedAt = `${this.todayDate} ${nowTime()}`
       rec.status = 'released'
+      // 营销预算：冻结预占核销为实际成本（放行即确认营销支出，幂等）
+      this._budgetConvertReserved('record', rec.id, 'settle', {
+        summary: `风控放行核销预占：${o.bizType === 'draw' ? '抽奖' : '兑换'}【${o.targetName}】`,
+        traceId
+      }, o.tenantId)
       this.addAuditLog('release', o.id,
         `放行${o.bizType === 'draw' ? '抽奖' : '兑换'}【${o.targetName}】${note ? '；备注：' + note : ''}`,
         { module: 'risk', tenantId: o.tenantId, traceId: trace })
@@ -1648,6 +1830,7 @@ export const usePlatformStore = defineStore('platform', {
     revokeRisk(orderId, note = '') {
       this.syncBusinessDay()
       const trace = this.beginTrace()
+      const traceId = trace
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) { this.endTrace(); return }
       if (!this.requirePerm('risk:review', 'risk') || !this.requireSameTenant(o.tenantId, 'risk')) {
@@ -1696,6 +1879,11 @@ export const usePlatformStore = defineStore('platform', {
       o.reviewer = this.user.name
       o.reviewedAt = `${this.todayDate} ${nowTime()}`
       rec.status = 'revoked'
+      // 营销预算：冻结预占释放（撤销即冲回营销支出占用，幂等）
+      this._budgetConvertReserved('record', rec.id, 'release', {
+        summary: `风控撤销释放预占：${o.bizType === 'draw' ? '抽奖' : '兑换'}【${o.targetName}】`,
+        traceId
+      }, o.tenantId)
       // 券类预占释放：冻结期未发券，撤销后券始终不存在；库存回补由下方统一处理
       if (rec.couponId) this.addCouponLog('revoke', null, rec, { orderId: o.id, traceId: trace })
       this.addAuditLog('revoke', o.id,
@@ -2029,6 +2217,7 @@ export const usePlatformStore = defineStore('platform', {
     reviewAfterSale(afterSaleId, approve, note = '') {
       this.syncBusinessDay()
       const trace = this.beginTrace()
+      const traceId = trace
       const as = this.afterSales.find((x) => x.id === afterSaleId)
       if (!as) { this.endTrace(); return false }
       if (!this.requirePerm('aftersale:review', 'aftersale') || !this.requireSameTenant(as.tenantId, 'aftersale')) {
@@ -2070,6 +2259,26 @@ export const usePlatformStore = defineStore('platform', {
       if (!target) { this.showToast('关联库存目标缺失，无法执行回写', 'warn'); this.endTrace(); return false }
       if (as.type === 'reship' && target.remain <= 0) {
         // 缺货：售后单挂起为「待补货」（不动账），采购验收入库后可从待处理售后继续履约
+        // 补发资金成本实时预占（待关联采购结算时核销，不重复付款）；
+        // 已有关联采购单在途的（采购预占已覆盖补发件）不重复预占
+        const linkedWaitingPo = this.purchaseOrders.find((po) => po.tenantId === as.tenantId && po.afterSaleId === as.id &&
+          ['pending', 'approved', 'receiving'].includes(po.status))
+        const reshipPrice = Math.round((Number(target.unitPrice) || 0) * 100) / 100
+        if (reshipPrice > 0 && !linkedWaitingPo) {
+          this._budgetOccupy('reserve',
+            [{
+              unit: 'money', amount: reshipPrice,
+              scopeType: as.targetType === 'prize' ? 'activity' : 'tenant',
+              scopeId: as.targetType === 'prize' ? as.activityId : as.tenantId,
+              category: 'reship', kind: 'reship-cost'
+            }],
+            {
+              category: 'reship', kind: 'reship-cost', refType: 'aftersale',
+              refId: as.id, bizNo: o.id,
+              summary: `缺货补发预占：【${as.targetName}】×1，估价 ${reshipPrice} 元（挂起待采购，结算时核销不重复付款）`,
+              userId: as.userId, traceId
+            }, as.tenantId)
+        }
         as.status = 'waiting_stock'
         as.reviewedAt = `${this.todayDate} ${nowTime()}`
         as.reviewer = this.user.name
@@ -2091,6 +2300,16 @@ export const usePlatformStore = defineStore('platform', {
           this.addPointRecord(as.refundPoints,
             `售后退款：${as.typeLabel}【${as.targetName}】（发货单 ${o.id}）`, 'refund',
             { refId: as.id, refType: 'after-sale', tenantId: as.tenantId, traceId: trace })
+          // 营销预算：退货/拒收按申请时快照冲回已占用积分成本（预算余额恢复）
+          this._budgetRefund(
+            { unit: 'points', amount: as.refundPoints, scopeType: 'tenant', scopeId: as.tenantId },
+            {
+              category: o.bizType === 'draw' ? 'draw' : 'redeem',
+              kind: o.bizType === 'draw' ? 'draw-refund' : 'redeem-refund',
+              refType: 'aftersale', refId: as.id, bizNo: o.id,
+              summary: `售后退款冲回预算：${as.typeLabel}【${as.targetName}】+${as.refundPoints} 积分`,
+              userId: as.userId, traceId
+            }, as.tenantId)
         }
         o.status = 'returned'
         o.returnedAt = `${this.todayDate} ${nowTime()}`
@@ -2098,6 +2317,25 @@ export const usePlatformStore = defineStore('platform', {
         this._appendTrace(o, 'returned',
           as.type === 'reject' ? '收件人拒收，包裹退回发货仓' : '退货包裹已退回发货仓，售后完成')
       } else {
+        // 补发资金成本（按 SKU 采购成本口径 unitPrice 估算，0 表示未维护成本不占用）；
+        // 关联采购单已在途的（缺货挂起→采购入库）补发成本已在采购付款中结算，不重复占用
+        const linkedPo = this.purchaseOrders.find((po) => po.tenantId === as.tenantId && po.afterSaleId === as.id)
+        const reshipPrice = Math.round((Number(target.unitPrice) || 0) * 100) / 100
+        if (reshipPrice > 0 && !(continuing && linkedPo)) {
+          this._budgetOccupy('settle',
+            [{
+              unit: 'money', amount: reshipPrice,
+              scopeType: as.targetType === 'prize' ? 'activity' : 'tenant',
+              scopeId: as.targetType === 'prize' ? as.activityId : as.tenantId,
+              category: 'reship', kind: 'reship-cost'
+            }],
+            {
+              category: 'reship', kind: 'reship-cost', refType: 'aftersale',
+              refId: as.id, bizNo: o.id,
+              summary: `售后补发成本：【${as.targetName}】×1，估价 ${reshipPrice} 元`,
+              userId: as.userId, traceId
+            }, as.tenantId)
+        }
         // 补发：库存再扣 1，生成补发发货单（沿用原收货信息，直接待发货；原单保留轨迹节点）
         target.remain -= 1
         const reship = {
@@ -2151,6 +2389,17 @@ export const usePlatformStore = defineStore('platform', {
     // 缺货补发联动：售后补发审核时缺货则挂起 waiting_stock；采购验收入库后可从「待处理售后」继续履约。
     // 采购单/验收批次 append-only，撤销/驳回不删单，全部操作审计留痕、按 tenantId 强隔离。
 
+    // 采购资金预算条目（数量 × 协议单价；活动奖品落活动+租户预算，商品落租户预算）
+    _poBudgetItem(po) {
+      return {
+        unit: 'money',
+        amount: Math.round(po.qty * po.unitPrice * 100) / 100,
+        scopeType: po.targetType === 'prize' ? 'activity' : 'tenant',
+        scopeId: po.targetType === 'prize' ? po.activityId : po.tenantId,
+        category: 'purchase', kind: 'purchase-commit'
+      }
+    },
+
     // 采购目标快照（奖品按活动维度 / 商品按 goodsId），返回 { target, snap }；目标不存在返回 null
     _purchaseTargetOf(targetType, activityId, targetId) {
       if (targetType === 'prize') {
@@ -2168,6 +2417,7 @@ export const usePlatformStore = defineStore('platform', {
     createPurchaseOrder(form) {
       this.syncBusinessDay()
       const trace = this.beginTrace()
+      const traceId = trace
       if (!this.requirePerm('purchase:apply', 'purchase')) { this.endTrace(); return null }
       const tid = this.activeTenantId
       const targetType = form.targetType === 'prize' ? 'prize' : 'goods'
@@ -2188,6 +2438,16 @@ export const usePlatformStore = defineStore('platform', {
       const unitPrice = Math.round(Number(form.unitPrice) * 100) / 100
       if (!(unitPrice > 0)) { this.showToast('请填写正确的协议单价（>0）', 'warn'); this.endTrace(); return null }
       if (unitPrice > 1000000) { this.showToast('单价异常，请核对后再提交', 'warn'); this.endTrace(); return null }
+
+      // 营销预算预检：采购承诺金额（数量 × 协议单价）超出租户/活动资金预算（或预算冻结关闭）时整单拦截
+      const poBudgetItem = {
+        unit: 'money', amount: Math.round(qty * unitPrice * 100) / 100,
+        scopeType: targetType === 'prize' ? 'activity' : 'tenant',
+        scopeId: targetType === 'prize' ? form.activityId : tid
+      }
+      if (!this._budgetGuard([{ ...poBudgetItem, category: 'purchase', kind: 'purchase-commit' }], tid)) {
+        this.endTrace(); return null
+      }
 
       // 缺货补发联动：可从待补货售后单一键发起（固化售后快照，入完后提示继续履约）
       let linkedAfterSale = null
@@ -2234,6 +2494,13 @@ export const usePlatformStore = defineStore('platform', {
         batches: []
       }
       this.purchaseOrders.unshift(po)
+      // 营销预算：采购承诺金额实时预占（驳回/撤销释放，供应商结算核销转实际付款）
+      this._budgetOccupy('reserve', [this._poBudgetItem(po)], {
+        category: 'purchase', kind: 'purchase-commit', refType: 'po',
+        refId: po.id, bizNo: po.poNo,
+        summary: `采购预占：${po.targetName} ×${qty}（${supplierName}，协议单价 ${unitPrice} 元）`,
+        userId: po.applicantId, traceId
+      }, tid)
       this.addAuditLog('purchase-apply', po.id,
         `发起采购【${hit.snap.targetName}】×${qty}（${targetType === 'prize' ? '活动奖品' : '商城商品'}，供应商：${supplierName}，协议单价 ${unitPrice} 元，事由：${reason}）` +
         (linkedAfterSale ? `；关联待补货售后单 ${linkedAfterSale.id}，入库后继续补发履约` : ''),
@@ -2246,6 +2513,7 @@ export const usePlatformStore = defineStore('platform', {
     // 申请人在审批前撤销采购单（幂等：仅 pending；仅发起人本人或管理员；不动库存）
     cancelPurchaseOrder(poId) {
       const trace = this.beginTrace()
+      const traceId = trace
       const po = this.purchaseOrders.find((x) => x.id === poId)
       if (!po) { this.endTrace(); return false }
       if (!this.requirePerm('purchase:apply', 'purchase') || !this.requireSameTenant(po.tenantId, 'purchase')) {
@@ -2259,6 +2527,11 @@ export const usePlatformStore = defineStore('platform', {
       }
       po.status = 'canceled'
       po.approveNote = '申请人撤销'
+      // 营销预算：撤销即释放采购预占
+      this._budgetConvertReserved('po', po.id, 'release', {
+        category: 'purchase', kind: 'purchase-commit',
+        summary: `采购撤销释放预占：${po.targetName} ×${po.qty}`, traceId
+      }, po.tenantId)
       this.addAuditLog('purchase-cancel', po.id, `撤销采购申请【${po.targetName}】×${po.qty}（审批前撤回，库存未变动）`,
         { module: 'purchase', tenantId: po.tenantId, traceId: trace })
       this.showToast('采购申请已撤销', 'info')
@@ -2269,6 +2542,7 @@ export const usePlatformStore = defineStore('platform', {
     // 采购审批（RBAC：purchase:approve；仅本租户、仅 pending；通过不产生库存变动，入库以验收批次为准）
     reviewPurchaseOrder(poId, approve, note = '') {
       const trace = this.beginTrace()
+      const traceId = trace
       const po = this.purchaseOrders.find((x) => x.id === poId)
       if (!po) { this.endTrace(); return false }
       if (!this.requirePerm('purchase:approve', 'purchase') || !this.requireSameTenant(po.tenantId, 'purchase')) {
@@ -2290,6 +2564,11 @@ export const usePlatformStore = defineStore('platform', {
         po.approvedAt = `${this.todayDate} ${nowTime()}`
         po.approver = this.user.name
         po.approveNote = remark
+        // 营销预算：审批驳回即释放采购预占（通过则保留预占，待供应商结算核销）
+        this._budgetConvertReserved('po', po.id, 'release', {
+          category: 'purchase', kind: 'purchase-commit',
+          summary: `采购驳回释放预占：${po.targetName} ×${po.qty}`, traceId
+        }, po.tenantId)
         this.addAuditLog('purchase-reject', po.id,
           `驳回采购【${po.targetName}】×${po.qty}（申请人 ${po.applicant}）${remark ? '；备注：' + remark : ''}；库存未变动`,
           { module: 'purchase', tenantId: po.tenantId, traceId: trace })
@@ -2610,6 +2889,7 @@ export const usePlatformStore = defineStore('platform', {
     settleSupplierBill(billId, note = '') {
       this.syncBusinessDay()
       const trace = this.beginTrace()
+      const traceId = trace
       const bill0 = this._requireBill(billId)
       if (!bill0) { this.endTrace(); return null }
       if (!this.requirePerm('supplier:settle', 'supplier') || !this.requireSameTenant(bill0.tenantId, 'supplier')) {
@@ -2640,6 +2920,35 @@ export const usePlatformStore = defineStore('platform', {
         rows: rows.map((r) => ({ ...r }))
       }
       po.settledBillId = bill0.id
+      // 营销预算闭环（结算付款时落账）：
+      //  1) 核销采购单在途预占（审批数量×协议单价预占的部分）；
+      //  2) 按账单应付金额记实际资金成本（实收合格量×单价，含补发占用扣减）；
+      //  3) 关联缺货补发已履约的，补发件在此结算（不重复计价/入库）。
+      this._budgetConvertReserved('po', po.id, 'release', {
+        category: 'purchase', kind: 'purchase-commit',
+        summary: `供应商结算核销采购预占：${po.targetName}（账单 ${bill0.billNo}）`, traceId
+      }, po.tenantId)
+      if (amount.payableAmount > 0) {
+        this._budgetOccupy('settle',
+          [{
+            unit: 'money', amount: amount.payableAmount,
+            scopeType: po.targetType === 'prize' ? 'activity' : 'tenant',
+            scopeId: po.targetType === 'prize' ? po.activityId : po.tenantId,
+            category: 'supplier', kind: 'supplier-payment'
+          }],
+          {
+            category: 'supplier', kind: 'supplier-payment',
+            refType: 'supplier-bill', refId: bill0.id, bizNo: bill0.billNo,
+            summary: `供应商付款：${po.supplierName}【${po.targetName}】应付 ${amount.payableAmount} 元（实收合格 ${amount.acceptedQty} 件）`,
+            userId: po.applicantId, traceId
+          }, po.tenantId)
+      }
+      if (reshipAllocated > 0) {
+        this._budgetConvertReserved('aftersale', po.afterSaleId, 'settle', {
+          category: 'reship', kind: 'reship-cost',
+          summary: `缺货补发成本随采购结算：${po.targetName} ${reshipAllocated} 件`, traceId
+        }, po.tenantId)
+      }
       this.addAuditLog('supplier-settle', bill0.id,
         `结算付款供应商账单 ${bill0.billNo}【${bill0.targetName}】：供应商 ${bill0.supplierName} 应付 ${bill0.payableAmount} 元（实收合格 ${bill0.acceptedQty} × ${bill0.unitPrice}` +
         (bill0.reshipQty ? ` − 售后补发占用 ${bill0.reshipQty} 件 ${bill0.reshipDeduct} 元` : '') + '）；已按采购批次回写库存对账（到货/合格/验退/短少/补发占用逐批勾稽）' +
@@ -2724,12 +3033,377 @@ export const usePlatformStore = defineStore('platform', {
       }
     },
 
+    // ===== 营销预算与成本控制闭环 =====
+    // 预算单：按「租户/活动 × 积分/资金」编制，财务审批生效（budget:manage / budget:approve）。
+    // 占用台账 append-only：reserve 预占（风控冻结成本、审批中采购）→ settle 实际成本（放行/正常落账/
+    // 任务奖励/供应商付款）/ release 释放（风控撤销、采购驳回撤销）；售后退货 refund 冲回已占用积分成本。
+    // 抽奖、积分奖励、采购入库及供应商结算在业务落账前实时预检 + 锁内核验，超额/冻结/关闭整笔阻断。
+
+    // 生效预算定位：活动类占用同时落「活动预算 + 租户同币种预算」；无生效预算则该维度不控制
+    _activeBudgets(tenantId, scopeType, scopeId, unit) {
+      return this._scopeBudgets(tenantId, scopeType, scopeId, unit, ['active'])
+    },
+    // 预检口径：冻结预算拦截新增支出（已关闭预算为历史终态，新支出可落到其他生效预算）
+    _guardBudgets(tenantId, scopeType, scopeId, unit) {
+      return this._scopeBudgets(tenantId, scopeType, scopeId, unit, ['active', 'frozen'])
+    },
+    _scopeBudgets(tenantId, scopeType, scopeId, unit, statuses) {
+      return this.budgets.filter(
+        (b) => (b.tenantId || 't-star') === tenantId && b.unit === unit && statuses.includes(b.status) &&
+          (b.scopeType === 'tenant' && b.scopeId === tenantId ||
+            scopeType === 'activity' && b.scopeType === 'activity' && b.scopeId === scopeId)
+      )
+    },
+
+    // 预算预检（不落账）：返回 boolean 并对超额/冻结关闭给出拦截提示
+    _budgetGuard(items, tenantId = this.activeTenantId) {
+      // 同一笔业务可能同时产生多条占用（抽奖成本 + 积分奖励），按「预算 × 币种」汇总后一次性校验，
+      // 避免按条校验时成本恰好通过、奖励却超额导致的超支
+      const needByBudget = new Map()
+      for (const it of items || []) {
+        const amount = Math.round((Number(it.amount) || 0) * 100) / 100
+        if (amount <= 0) continue
+        for (const b of this._guardBudgets(tenantId, it.scopeType || 'tenant', it.scopeId || tenantId, it.unit)) {
+          needByBudget.set(b.id, (needByBudget.get(b.id) || 0) + amount)
+        }
+      }
+      for (const [budgetId, need0] of needByBudget) {
+        const need = Math.round(need0 * 100) / 100
+        const b = this.budgets.find((x) => x.id === budgetId)
+        if (!b) continue
+        if (b.status === 'frozen') {
+          this.showToast(`⛔ 预算【${b.name}】已冻结，支出被拦截`, 'warn')
+          return false
+        }
+        if (b.status !== 'active') continue
+        const sum = this.budgetSummary(b.id)
+        if (sum.occupied + need > b.amount + 1e-6) {
+          const unit = BUDGET_UNITS[b.unit].unit
+          this.showToast(
+            `⛔ 预算【${b.name}】余额不足：需占用 ${need} ${unit}，可用 ${Math.round((b.amount - sum.occupied) * 100) / 100} ${unit}（预算 ${b.amount}，已占用 ${sum.occupied}）`,
+            'warn')
+          return false
+        }
+      }
+      return true
+    },
+
+    // 落占用（mode: reserve | settle）；同一（业务凭证,预算,方向）幂等
+    _budgetOccupy(mode, items, refs, tenantId = this.activeTenantId) {
+      const rows = []
+      for (const it of items || []) {
+        const amount = Math.round((Number(it.amount) || 0) * 100) / 100
+        if (amount <= 0) continue
+        const scopeType = it.scopeType || 'tenant'
+        const scopeId = it.scopeId || tenantId
+        const rowRefId = `${refs.refId}:${it.kind || refs.kind}`
+        const effectBase = `bg-${mode}:${refs.refType}:${rowRefId}`
+        for (const b of this._activeBudgets(tenantId, scopeType, scopeId, it.unit)) {
+          const effectId = `${effectBase}:${b.id}`
+          if (this.budgetLedger.some((l) => l.effectId === effectId)) continue
+          const sum = this.budgetSummary(b.id)
+          if (b.status === 'frozen' || b.status === 'closed') continue // 预检已拦截，兜底
+          if (sum.occupied + amount > b.amount + 1e-6) continue
+          rows.push({
+            id: genId('bl'),
+            budgetId: b.id, bNo: b.bNo,
+            tenantId, scopeType: b.scopeType, scopeId: b.scopeId, unit: b.unit,
+            category: it.category || refs.category, kind: it.kind || refs.kind,
+            direction: mode, converts: false, reserveOf: '',
+            amount,
+            refType: refs.refType, refId: `${refs.refId}:${it.kind || refs.kind}`, bizNo: refs.bizNo || '',
+            summary: refs.summary || '',
+            userId: refs.userId || this.user.id,
+            operator: this.actorName(),
+            traceId: currentTrace || refs.traceId || '',
+            date: this.todayDate, time: nowTime(), ts: Date.now(),
+            effectId
+          })
+        }
+      }
+      if (rows.length) this.budgetLedger.unshift(...rows)
+      return rows
+    },
+
+    // 预占 → 实际成本（direction='settle'，风控放行）/ 释放（direction='release'，风控撤销、采购驳回撤销、供应商付款核销采购预占）
+    // 匹配该业务凭证下全部占用种类（record 类按 `${refId}:${kind}` 存多条：draw-cost/points-reward/redeem-cost）
+    _budgetConvertReserved(refType, refId, direction, refs = {}, tenantId = this.activeTenantId) {
+      const reserves = this.budgetLedger.filter((l) =>
+        l.direction === 'reserve' && l.refType === refType &&
+        (l.refId === refId || l.refId.startsWith(`${refId}:`)))
+      const out = []
+      reserves.forEach((rv) => {
+        if (this.budgetLedger.some((l) => l.reserveOf === rv.id && ['settle', 'release'].includes(l.direction))) return
+        if ((rv.tenantId || 't-star') !== tenantId) return
+        const b = this.budgets.find((x) => x.id === rv.budgetId)
+        if (!b) return
+        const effectId = `bg-${direction}:reserve:${rv.id}`
+        if (this.budgetLedger.some((l) => l.effectId === effectId)) return
+        out.push({
+          id: genId('bl'),
+          budgetId: b.id, bNo: b.bNo,
+          tenantId, scopeType: b.scopeType, scopeId: b.scopeId, unit: b.unit,
+          category: refs.category || rv.category, kind: refs.kind || rv.kind,
+          direction, converts: direction === 'settle', reserveOf: rv.id,
+          amount: rv.amount,
+          refType: refs.refType || refType, refId: refs.refId || refId, bizNo: refs.bizNo || rv.bizNo,
+          summary: refs.summary || rv.summary,
+          userId: rv.userId,
+          operator: this.actorName(),
+          traceId: currentTrace || refs.traceId || rv.traceId || '',
+          date: this.todayDate, time: nowTime(), ts: Date.now(),
+          effectId
+        })
+      })
+      if (out.length) this.budgetLedger.unshift(...out)
+      return out
+    },
+
+    // 已结算成本冲回（售后拒收/退货返还积分成本）
+    _budgetRefund(item, refs, tenantId = this.activeTenantId) {
+      const amount = Math.round((Number(item.amount) || 0) * 100) / 100
+      if (amount <= 0) return []
+      const scopeType = item.scopeType || 'tenant'
+      const scopeId = item.scopeId || tenantId
+      const out = []
+      for (const b of this._activeBudgets(tenantId, scopeType, scopeId, item.unit)) {
+        const effectId = `bg-refund:${refs.refType}:${refs.refId}:${b.id}`
+        if (this.budgetLedger.some((l) => l.effectId === effectId)) continue
+        out.push({
+          id: genId('bl'),
+          budgetId: b.id, bNo: b.bNo,
+          tenantId, scopeType: b.scopeType, scopeId: b.scopeId, unit: b.unit,
+          category: refs.category, kind: refs.kind,
+          direction: 'refund', converts: false, reserveOf: '',
+          amount,
+          refType: refs.refType, refId: refs.refId, bizNo: refs.bizNo || '',
+          summary: refs.summary || '',
+          userId: refs.userId || this.user.id,
+          operator: this.actorName(),
+          traceId: currentTrace || refs.traceId || '',
+          date: this.todayDate, time: nowTime(), ts: Date.now(),
+          effectId
+        })
+      }
+      if (out.length) this.budgetLedger.unshift(...out)
+      return out
+    },
+
+    // 抽奖占用条目：活动积分成本 + 积分奖品成本（积分预算，落活动预算+租户预算）
+    _drawBudgetItems(act, prize, cost) {
+      const items = []
+      if (cost > 0) items.push({ unit: 'points', amount: cost, scopeType: 'activity', scopeId: act.id, category: 'draw', kind: 'draw-cost' })
+      const pointPrize = prize?.name?.includes('积分') ? (parseInt(prize.name) || 0) : 0
+      if (pointPrize > 0) items.push({ unit: 'points', amount: pointPrize, scopeType: 'activity', scopeId: act.id, category: 'points', kind: 'points-reward' })
+      return items
+    },
+    _redeemBudgetItems(g) {
+      return g.cost > 0
+        ? [{ unit: 'points', amount: g.cost, scopeType: 'tenant', scopeId: g.tenantId || 't-star', category: 'redeem', kind: 'redeem-cost' }]
+        : []
+    },
+
+    // 运营编制预算（RBAC：budget:manage；一口径一币种同时仅一张生效/待审批/冻结预算）
+    createBudget(form) {
+      this.syncBusinessDay()
+      const trace = this.beginTrace()
+      if (!this.requirePerm('budget:manage', 'budget')) { this.endTrace(); return null }
+      const tid = this.activeTenantId
+      const scopeType = form.scopeType === 'activity' ? 'activity' : 'tenant'
+      let scopeId = tid
+      let scopeName = this.activeTenant.shortName
+      if (scopeType === 'activity') {
+        const act = this.activities.find((a) => a.id === form.scopeId && a.tenantId === tid)
+        if (!act) { this.showToast('活动不存在或不属于当前租户', 'warn'); this.endTrace(); return null }
+        scopeId = act.id
+        scopeName = act.name
+      }
+      const unit = form.unit === 'points' ? 'points' : 'money'
+      const amount = Math.round((Number(form.amount) || 0) * 100) / 100
+      if (!(amount > 0)) { this.showToast('预算额度需为正数', 'warn'); this.endTrace(); return null }
+      if (amount > 1e12) { this.showToast('预算额度异常，请核对', 'warn'); this.endTrace(); return null }
+      const startDate = form.startDate || this.todayDate
+      const endDate = form.endDate || startDate
+      if (endDate < startDate) { this.showToast('预算结束日不能早于开始日', 'warn'); this.endTrace(); return null }
+      const dup = this.budgets.some((b) =>
+        (b.tenantId || 't-star') === tid && b.scopeType === scopeType && b.scopeId === scopeId && b.unit === unit &&
+        ['pending', 'active', 'frozen'].includes(b.status))
+      if (dup) { this.showToast('该口径已存在生效/待审批/冻结中的同币种预算（一口径同时仅一张生效预算）', 'warn'); this.endTrace(); return null }
+      const b = {
+        id: genId('bg'),
+        bNo: 'BG' + Date.now().toString(36).toUpperCase() + String(Math.floor(Math.random() * 90) + 10),
+        tenantId: tid, traceId: trace,
+        scopeType, scopeId, scopeName, unit,
+        name: (form.name || '').trim() || (scopeType === 'activity' ? `活动预算：${scopeName}` : `${scopeName}${unit === 'points' ? '积分' : '营销资金'}预算`),
+        purpose: (form.purpose || '').trim(),
+        amount, startDate, endDate,
+        status: 'pending',
+        applicant: this.user.name, applicantId: this.currentMemberId || this.user.id,
+        createdAt: this.todayDate, time: nowTime(), ts: Date.now(),
+        reviewedAt: '', reviewer: '', reviewNote: '', frozenAt: '', closedAt: '',
+        adjustments: [], version: 1, parentId: ''
+      }
+      this.budgets.unshift(b)
+      this.addAuditLog('budget-apply', b.id,
+        `编制预算【${b.name}】：${scopeType === 'activity' ? '活动' : '租户'}级${BUDGET_UNITS[unit].label} ${amount} ${BUDGET_UNITS[unit].unit}（${startDate} ~ ${endDate}），提交财务审批`,
+        { module: 'budget', tenantId: tid, traceId: trace })
+      this.showToast(`💰 预算已提交财务审批：${b.name}（${amount} ${BUDGET_UNITS[unit].unit}）`, 'success')
+      this.endTrace()
+      return b
+    },
+
+    // 财务审批预算（RBAC：budget:approve；pending → active/rejected）
+    reviewBudget(budgetId, approve, note = '') {
+      const trace = this.beginTrace()
+      const b = this.budgets.find((x) => x.id === budgetId)
+      if (!b) { this.endTrace(); return false }
+      if (!this.requirePerm('budget:approve', 'budget') || !this.requireSameTenant(b.tenantId, 'budget')) {
+        this.endTrace(); return false
+      }
+      if (b.status !== 'pending') { this.showToast('仅待审批预算可审批', 'warn'); this.endTrace(); return false }
+      const remark = note.trim()
+      b.status = approve ? 'active' : 'rejected'
+      b.reviewedAt = `${this.todayDate} ${nowTime()}`
+      b.reviewer = this.user.name
+      b.reviewNote = remark
+      this.addAuditLog(approve ? 'budget-approve' : 'budget-reject', b.id,
+        `${approve ? '审批通过预算' : '驳回预算'}【${b.name}】（额度 ${b.amount} ${BUDGET_UNITS[b.unit].unit}）${remark ? '；意见：' + remark : ''}`,
+        { module: 'budget', tenantId: b.tenantId, traceId: trace })
+      this.showToast(approve ? `✅ 预算【${b.name}】已生效，开始实时占用控制` : `预算【${b.name}】已驳回`, approve ? 'success' : 'info')
+      this.endTrace()
+      return true
+    },
+
+    // 申请人撤销待审批预算
+    cancelBudget(budgetId) {
+      const trace = this.beginTrace()
+      const b = this.budgets.find((x) => x.id === budgetId)
+      if (!b) { this.endTrace(); return false }
+      if (!this.requirePerm('budget:manage', 'budget') || !this.requireSameTenant(b.tenantId, 'budget')) {
+        this.endTrace(); return false
+      }
+      if (b.status !== 'pending') { this.showToast('仅待审批预算可撤销', 'warn'); this.endTrace(); return false }
+      const isAdmin = this.identityKind === 'platform' || this.currentMember?.roleKey === 'org_admin'
+      if (!isAdmin && b.applicantId !== (this.currentMemberId || this.user.id)) {
+        this.deny('budget-denied', '只能撤销本人编制的预算申请', { module: 'budget', tenantId: b.tenantId, traceId: trace })
+        this.endTrace(); return false
+      }
+      b.status = 'canceled'
+      b.reviewNote = '申请人撤销'
+      this.addAuditLog('budget-cancel', b.id, `撤销预算【${b.name}】（审批前撤回，未参与占用控制）`,
+        { module: 'budget', tenantId: b.tenantId, traceId: trace })
+      this.showToast('预算申请已撤销', 'info')
+      this.endTrace()
+      return true
+    },
+
+    // 财务冻结/解冻预算（冻结期新增支出一律拦截，已发生占用保留）
+    setBudgetFrozen(budgetId, frozen, note = '') {
+      const trace = this.beginTrace()
+      const b = this.budgets.find((x) => x.id === budgetId)
+      if (!b) { this.endTrace(); return false }
+      if (!this.requirePerm('budget:approve', 'budget') || !this.requireSameTenant(b.tenantId, 'budget')) {
+        this.endTrace(); return false
+      }
+      const want = frozen ? 'active' : 'frozen'
+      if (b.status !== want) { this.showToast(frozen ? '仅生效中预算可冻结' : '仅冻结中预算可解冻', 'warn'); this.endTrace(); return false }
+      b.status = frozen ? 'frozen' : 'active'
+      if (frozen) b.frozenAt = `${this.todayDate} ${nowTime()}`
+      else b.frozenAt = ''
+      if (note.trim()) b.reviewNote = note.trim()
+      this.addAuditLog(frozen ? 'budget-freeze' : 'budget-activate', b.id,
+        `${frozen ? '冻结预算' : '解冻预算'}【${b.name}】${note.trim() ? '；备注：' + note.trim() : ''}${frozen ? '；冻结期新增抽奖/兑换/采购等支出一律拦截' : '；恢复实时占用控制'}`,
+        { module: 'budget', tenantId: b.tenantId, traceId: trace })
+      this.showToast(frozen ? `❄️ 预算【${b.name}】已冻结，新增支出被拦截` : `预算【${b.name}】已解冻`, 'info')
+      this.endTrace()
+      return true
+    },
+
+    // 财务关闭预算（终态；历史占用台账保留）
+    closeBudget(budgetId, note = '') {
+      const trace = this.beginTrace()
+      const b = this.budgets.find((x) => x.id === budgetId)
+      if (!b) { this.endTrace(); return false }
+      if (!this.requirePerm('budget:approve', 'budget') || !this.requireSameTenant(b.tenantId, 'budget')) {
+        this.endTrace(); return false
+      }
+      if (!['active', 'frozen'].includes(b.status)) { this.showToast('仅生效/冻结预算可关闭', 'warn'); this.endTrace(); return false }
+      b.status = 'closed'
+      b.closedAt = `${this.todayDate} ${nowTime()}`
+      b.reviewNote = note.trim()
+      this.addAuditLog('budget-close', b.id,
+        `关闭预算【${b.name}】（预算期终止，历史台账保留，不再接受新占用）${note.trim() ? '；备注：' + note.trim() : ''}`,
+        { module: 'budget', tenantId: b.tenantId, traceId: trace })
+      this.showToast(`预算【${b.name}】已关闭`, 'info')
+      this.endTrace()
+      return true
+    },
+
+    // 预算调整申请（运营；append-only 留痕，审批通过后才改额度）
+    requestBudgetAdjust(budgetId, delta, reason) {
+      this.syncBusinessDay()
+      const trace = this.beginTrace()
+      const b = this.budgets.find((x) => x.id === budgetId)
+      if (!b) { this.endTrace(); return null }
+      if (!this.requirePerm('budget:manage', 'budget') || !this.requireSameTenant(b.tenantId, 'budget')) {
+        this.endTrace(); return null
+      }
+      if (!['active', 'frozen'].includes(b.status)) { this.showToast('仅生效/冻结预算可申请调整', 'warn'); this.endTrace(); return null }
+      const d = Math.round((Number(delta) || 0) * 100) / 100
+      if (d === 0) { this.showToast('调整额度不能为 0', 'warn'); this.endTrace(); return null }
+      if (b.amount + d < 0) { this.showToast('调减后预算额度不能为负', 'warn'); this.endTrace(); return null }
+      if ((b.adjustments || []).some((a) => a.status === 'pending')) { this.showToast('该预算已有待审批调整，请先处理', 'warn'); this.endTrace(); return null }
+      const text = (reason || '').trim()
+      if (!text) { this.showToast('请填写调整事由', 'warn'); this.endTrace(); return null }
+      const adj = {
+        id: genId('bga'), delta: d, reason: text, status: 'pending',
+        applicant: this.user.name, applicantId: this.currentMemberId || this.user.id,
+        createdAt: this.todayDate, time: nowTime(), ts: Date.now(),
+        reviewedAt: '', reviewer: '', reviewNote: ''
+      }
+      b.adjustments = [...(b.adjustments || []), adj]
+      this.addAuditLog('budget-adjust-apply', b.id,
+        `申请${d > 0 ? '追加' : '调减'}预算【${b.name}】 ${d > 0 ? '+' : ''}${d} ${BUDGET_UNITS[b.unit].unit}（${b.amount} → ${Math.round((b.amount + d) * 100) / 100}），待财务审批`,
+        { module: 'budget', tenantId: b.tenantId, traceId: trace })
+      this.showToast('预算调整申请已提交财务审批', 'success')
+      this.endTrace()
+      return adj
+    },
+
+    // 财务审批预算调整
+    reviewBudgetAdjust(budgetId, adjustId, approve, note = '') {
+      const trace = this.beginTrace()
+      const b = this.budgets.find((x) => x.id === budgetId)
+      if (!b) { this.endTrace(); return false }
+      if (!this.requirePerm('budget:approve', 'budget') || !this.requireSameTenant(b.tenantId, 'budget')) {
+        this.endTrace(); return false
+      }
+      const adj = (b.adjustments || []).find((a) => a.id === adjustId)
+      if (!adj) { this.showToast('预算调整记录不存在', 'warn'); this.endTrace(); return false }
+      if (adj.status !== 'pending') { this.showToast('该调整已审批', 'warn'); this.endTrace(); return false }
+      const remark = note.trim()
+      const before = b.amount
+      adj.status = approve ? 'approved' : 'rejected'
+      adj.reviewedAt = `${this.todayDate} ${nowTime()}`
+      adj.reviewer = this.user.name
+      adj.reviewNote = remark
+      if (approve) {
+        b.amount = Math.round((b.amount + adj.delta) * 100) / 100
+        b.version += 1
+      }
+      this.addAuditLog(approve ? 'budget-adjust-approve' : 'budget-adjust-reject', b.id,
+        `${approve ? '审批通过预算调整' : '驳回预算调整'}【${b.name}】 ${adj.delta > 0 ? '+' : ''}${adj.delta}（${before} → ${b.amount} ${BUDGET_UNITS[b.unit].unit}）${remark ? '；意见：' + remark : ''}`,
+        { module: 'budget', tenantId: b.tenantId, traceId: trace })
+      this.showToast(approve ? `✅ 预算调整已生效：${b.name} 额度 ${b.amount} ${BUDGET_UNITS[b.unit].unit}` : '预算调整已驳回', approve ? 'success' : 'info')
+      this.endTrace()
+      return true
+    },
+
     // ===== 卡券账户与核销 =====
     // 生命周期：中奖/兑换有效后发券（issue）；风控冻结时只预占库存（hold，不发券），
     //          放行后交付发券（deliver），撤销释放预占（revoke，券从未发出）；
     //          用户出示券码、运营扫码/输码核销（redeem）；到期自动失效（expire）。
     // 券码全局唯一；状态机保证重复核销、过期核销被拦截；券实例、卡券台账 append-only。
-
     // 卡券业务台账（append-only，核销/发券留痕，不裁剪）
     addCouponLog(action, couponId, rec, extra = {}) {
       const tpl = rec?.couponId ? (this.couponTpls[rec.couponId] || null) : null
@@ -4687,6 +5361,163 @@ export const usePlatformStore = defineStore('platform', {
 
       // —— 12) 第二租户云雀数科种子：独立活动/商品/卡券/审核单/发货单，与星河商贸数据强隔离 ——
       this.seedCloudTenant()
+
+      // —— 13) 营销预算与成本控制种子：预算单审批流 + 历史台账快照（与种子业务占用勾稽） ——
+      this.seedBudgets()
+    },
+
+    // 营销预算种子（append-only 预算单 + 历史占用快照）
+    seedBudgets() {
+      const mkBg = (id, tenantId, scopeType, scopeId, scopeName, unit, amount, extra = {}) => ({
+        id, bNo: 'BG' + id.replace(/-/g, '').toUpperCase().slice(2),
+        tenantId, traceId: '', scopeType, scopeId, scopeName, unit,
+        name: extra.name || (scopeType === 'activity' ? `活动预算：${scopeName}` : `${scopeName}${unit === 'points' ? '积分' : '营销资金'}预算`),
+        purpose: extra.purpose || '年度营销预算（种子）',
+        amount, startDate: '2026-01-01', endDate: '2026-12-31',
+        status: extra.status || 'active',
+        applicant: extra.applicant || '运营小张', applicantId: extra.applicantId || 'm-star-ops',
+        createdAt: '2026-01-05', time: '10:00:00', ts: new Date('2026-01-05T10:00:00').getTime(),
+        reviewedAt: extra.status === 'pending' ? '' : '2026-01-06 09:30:00',
+        reviewer: extra.status === 'pending' ? '' : (extra.reviewer || '财务小周'),
+        reviewNote: extra.reviewNote || '', frozenAt: '', closedAt: '',
+        adjustments: [], version: 1, parentId: ''
+      })
+      this.budgets = [
+        mkBg('bg-star-pt', 't-star', 'tenant', 't-star', '星河商贸', 'points', 200000),
+        mkBg('bg-star-mn', 't-star', 'tenant', 't-star', '星河商贸', 'money', 50000),
+        mkBg('bg-star-a1p', 't-star', 'activity', 'act-1', '周年庆幸运转盘', 'points', 5000),
+        mkBg('bg-star-a1m', 't-star', 'activity', 'act-1', '周年庆幸运转盘', 'money', 30000),
+        mkBg('bg-star-a2p', 't-star', 'activity', 'act-2', '新人刮刮乐', 'points', 3000),
+        mkBg('bg-star-a2m', 't-star', 'activity', 'act-2', '新人刮刮乐', 'money', 5000),
+        mkBg('bg-star-nd', 't-star', 'tenant', 't-star', '星河商贸', 'money', 20000,
+          { status: 'pending', name: '国庆大促追加预算（待审批）', purpose: '国庆档加码投放，申请追加资金预算 2 万元', reviewedAt: '', reviewer: '' }),
+        mkBg('bg-star-old', 't-star', 'tenant', 't-star', '星河商贸', 'money', 8000,
+          { status: 'closed', name: '上半年节庆营销预算（已关闭）', purpose: '春节/五一营销专项',
+            reviewedAt: '2026-01-06 09:30:00', closedAt: '2026-07-01 00:00:00', reviewNote: '预算期结束，财务统一关账' }),
+        mkBg('bg-cloud-pt', 't-cloud', 'tenant', 't-cloud', '云雀数科', 'points', 50000,
+          { applicant: '运营小冯', applicantId: 'm-cloud-ops', reviewer: '财务小许' }),
+        mkBg('bg-cloud-mn', 't-cloud', 'tenant', 't-cloud', '云雀数科', 'money', 10000,
+          { applicant: '运营小冯', applicantId: 'm-cloud-ops', reviewer: '财务小许' }),
+        mkBg('bg-cloud-a1p', 't-cloud', 'activity', 'cact-1', '云雀上线幸运转盘', 'points', 3000,
+          { applicant: '运营小冯', applicantId: 'm-cloud-ops', reviewer: '财务小许' }),
+        mkBg('bg-cloud-a1m', 't-cloud', 'activity', 'cact-1', '云雀上线幸运转盘', 'money', 8000,
+          { applicant: '运营小冯', applicantId: 'm-cloud-ops', reviewer: '财务小许' })
+      ]
+
+      // 历史占用快照：按当前业务/台账推导种子已发生的成本，为每个生效预算落一张 snapshot 台账行
+      // （历史成本一次性结转；后续新发生的抽奖/奖励/采购/结算逐笔实时占用，口径连续）。
+      const tid = 't-star'
+      const snapshot = (budgetId, category, amount, summary, ts) => ({
+        id: genId('bls'), budgetId,
+        bNo: this.budgets.find((b) => b.id === budgetId)?.bNo || '',
+        tenantId: this.budgets.find((b) => b.id === budgetId)?.tenantId || tid,
+        scopeType: this.budgets.find((b) => b.id === budgetId)?.scopeType || 'tenant',
+        scopeId: this.budgets.find((b) => b.id === budgetId)?.scopeId || tid,
+        unit: this.budgets.find((b) => b.id === budgetId)?.unit || 'points',
+        category, kind: 'history-snapshot',
+        direction: 'settle', converts: false, reserveOf: '',
+        amount: Math.round(amount * 100) / 100,
+        refType: 'history', refId: `snapshot:${budgetId}:${category}`, bizNo: '',
+        summary, userId: CUSTOMER.id, operator: '系统', traceId: '',
+        date: this.todayDate, time: '00:00:01', ts: ts || 1,
+        effectId: `bg-snapshot:${budgetId}:${category}`, snapshot: true
+      })
+      const inT = (x) => (x.tenantId || 't-star') === tid
+      // 积分成本：按业务记录与流水推导（normal/released 落账成本 + frozen 预占；revoked 不计）
+      const drawCostOf = (r) => {
+        const a = this.activities.find((x) => x.id === r.activityId)
+        return a && a.costType === 'points' ? (a.cost || 0) : 0
+      }
+      const pointPrizeOf = (r) => {
+        const n = parseInt(r.prizeName, 10)
+        return r.prizeName?.includes('积分') && n ? n : 0
+      }
+      const ledger = []
+      // —— 租户积分预算 ——
+      let ptReserve = 0
+      let ptCommitted = 0
+      this.records.filter(inT).forEach((r) => {
+        if (r.status === 'revoked') return
+        if (r.type === 'draw') {
+          const c = drawCostOf(r)
+          const rp = pointPrizeOf(r)
+          if (r.status === 'frozen') ptReserve += c + rp
+          else ptCommitted += c + rp
+        } else {
+          const g = this.goods.find((x) => x.id === r.goodsId)
+          if (r.status === 'frozen') ptReserve += g?.cost || 0
+          else ptCommitted += g?.cost || 0
+        }
+      })
+      // 任务奖励台账（全部按租户预算）
+      const taskReward = this.taskClaims.filter((c) => (c.tenantId || 't-star') === tid).reduce((n, c) => n + (c.reward || 0), 0)
+      ptCommitted += taskReward
+      if (ptReserve > 0) {
+        const row = snapshot('bg-star-pt', 'draw', ptReserve,
+          `历史风控冻结成本预占（种子在审单 ${this.records.filter(inT).filter((r) => r.status === 'frozen').length} 笔）`, 2)
+        row.direction = 'reserve'; row.kind = 'history-frozen'; row.refId = 'snapshot:bg-star-pt:reserve'; row.effectId = 'bg-snapshot:bg-star-pt:reserve'
+        ledger.push(row)
+      }
+      if (ptCommitted > 0) {
+        ledger.push(snapshot('bg-star-pt', 'points', ptCommitted,
+          `历史抽奖/兑换/任务积分成本（含任务奖励 ${taskReward}，见 P1 积分发生额）`, 3))
+      }
+      // —— 活动积分预算：act-1（免费，仅有冻结预占的为 0）；act-2（成本 10） ——
+      const actPoints = (actId) => {
+        let committed = 0
+        let reserve = 0
+        this.records.filter((r) => inT(r) && r.type === 'draw' && r.activityId === actId && r.status !== 'revoked').forEach((r) => {
+          const v = drawCostOf(r) + pointPrizeOf(r)
+          if (r.status === 'frozen') reserve += v; else committed += v
+        })
+        return { committed, reserve }
+      }
+      const a2p = actPoints('act-2')
+      if (a2p.committed > 0) ledger.push(snapshot('bg-star-a2p', 'draw', a2p.committed, '历史抽奖成本/积分奖励：新人刮刮乐（10 积分/次）', 4))
+      if (a2p.reserve > 0) {
+        const row = snapshot('bg-star-a2p', 'draw', a2p.reserve, '历史风控冻结预占：新人刮刮乐', 5)
+        row.direction = 'reserve'; row.kind = 'history-frozen'; row.refId = 'snapshot:bg-star-a2p:reserve'; row.effectId = 'bg-snapshot:bg-star-a2p:reserve'
+        ledger.push(row)
+      }
+      // —— 资金预算：已结算/待结算账单=实际成本；无有效账单的在途采购单=预占；缺货挂起补发=预占 ——
+      const settledOrBillPoIds = new Set(this.supplierBills
+        .filter((b) => inT(b) && b.status !== 'rejected')
+        .map((b) => b.poId))
+      let mnCommitted = 0
+      this.supplierBills.filter((b) => inT(b) && ['approved', 'settled'].includes(b.status))
+        .forEach((b) => { mnCommitted += b.payableAmount || 0 })
+      let mnReserve = 0
+      this.purchaseOrders.filter(inT).forEach((po) => {
+        if (['pending', 'approved', 'receiving'].includes(po.status) && !settledOrBillPoIds.has(po.id)) {
+          mnReserve += Math.round((po.qty || 0) * (po.unitPrice || 0) * 100) / 100
+        }
+      })
+      const pendingPoCount = this.purchaseOrders.filter((o) => inT(o) && ['pending', 'approved', 'receiving'].includes(o.status) && !settledOrBillPoIds.has(o.id)).length
+      this.afterSales.filter(inT).forEach((as) => {
+        if (as.type === 'reship' && as.status === 'waiting_stock') {
+          // 关联采购单已在途（seed-po2 已按数量×单价预占），补发件不重复预占；
+          // 仅当没有关联采购（非采购补货来源）时才按估价预占
+          const linkedPo = this.purchaseOrders.find((po) => inT(po) && po.afterSaleId === as.id)
+          if (linkedPo) return
+          const target = as.targetType === 'prize'
+            ? this.activities.find((a) => a.id === as.activityId)?.prizes.find((p) => p.id === as.targetId)
+            : this.goods.find((g) => g.id === as.targetId)
+          mnReserve += Math.round((Number(target?.unitPrice) || 0) * 100) / 100
+        }
+      })
+      if (mnCommitted > 0) ledger.push(snapshot('bg-star-mn', 'supplier', mnCommitted, '历史供应商付款/待结算应付（保温杯 625 元已付 + 福袋 79.2 元待付）', 6))
+      if (mnReserve > 0) {
+        const row = snapshot('bg-star-mn', 'purchase', mnReserve,
+          `历史在途采购预占 + 缺货补发预占（${pendingPoCount} 张在途采购单及待补货售后）`, 7)
+        row.direction = 'reserve'; row.kind = 'history-po'; row.refId = 'snapshot:bg-star-mn:reserve'; row.effectId = 'bg-snapshot:bg-star-mn:reserve'
+        ledger.push(row)
+      }
+      // 活动资金预算 act-1：保温杯采购已结算 625
+      ledger.push(snapshot('bg-star-a1m', 'supplier', 625, '历史采购付款：定制保温杯 50 件 × 12.5 元（SBSEED0001 已结算）', 8))
+      // 活动资金预算 act-2：暂无资金成本（视频月卡为券类积分奖品）——不产生快照行
+      // 关闭预算历史快照（不影响占用计算，但保留台账演示）
+      ledger.push(snapshot('bg-star-old', 'supplier', 7680, '上半年营销采购与权益成本（已关账）', 9))
+      this.budgetLedger = ledger
     },
 
     // 第二租户（t-cloud）演示数据：零积分成本活动 + 0 积分券兑换（不参与平台积分余额链）

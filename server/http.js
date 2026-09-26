@@ -12,6 +12,7 @@ const PERMS = {
   shipSend: 'ship:send', shipTrace: 'ship:trace', aftersaleReview: 'aftersale:review',
   purchaseApply: 'purchase:apply', purchaseApprove: 'purchase:approve', purchaseInbound: 'purchase:inbound',
   supplierBill: 'supplier:bill', supplierReview: 'supplier:review', supplierSettle: 'supplier:settle',
+  budgetManage: 'budget:manage', budgetApprove: 'budget:approve',
   couponRedeem: 'coupon:redeem',
   reconRun: 'recon:run', reconReview: 'recon:review', reconCompensate: 'recon:compensate',
   activityManage: 'activity:manage'
@@ -166,6 +167,16 @@ async function route(app, req, res, json) {
   }
   if (method === 'GET' && p === '/api/supplier/recon') {
     return json(res, 200, { recon: app.supplier.computeRecon(tid()) })
+  }
+  if (method === 'GET' && p === '/api/budgets') {
+    const list = app.budget.list(tid()).map((b) => ({ ...b, summary: app.budget.summary(b.id) }))
+    return json(res, 200, { budgets: list })
+  }
+  if (method === 'GET' && p === '/api/budgets/ledger') {
+    return json(res, 200, { ledger: app.budget.ledger(tid()) })
+  }
+  if (method === 'GET' && p === '/api/budgets/dashboard') {
+    return json(res, 200, { dashboard: app.budget.dashboard(tid()) })
   }
   if (method === 'GET' && p === '/api/risk/orders') {
     const list = app.k.state.riskOrders
@@ -362,6 +373,62 @@ async function route(app, req, res, json) {
     return json(res, 200, { ok: true, activity: row })
   }
 
+  // —— 写：营销预算与成本控制 ——
+  if (method === 'POST' && p === '/api/budgets/create') {
+    await requireStaffPerm(app, session, PERMS.budgetManage)
+    const row = await app.budget.create(body, session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/review') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.review(body.budgetId, !!body.approve, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/cancel') {
+    await requireStaffPerm(app, session, PERMS.budgetManage)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.cancel(body.budgetId, session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/freeze') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.setFrozen(body.budgetId, true, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/activate') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.setFrozen(body.budgetId, false, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/close') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.close(body.budgetId, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/adjust') {
+    await requireStaffPerm(app, session, PERMS.budgetManage)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.requestAdjust(body.budgetId, Number(body.delta) || 0, body.reason || '', session)
+    return json(res, 200, { ok: true, adjustment: row })
+  }
+  if (method === 'POST' && p === '/api/budgets/adjust-review') {
+    await requireStaffPerm(app, session, PERMS.budgetApprove)
+    const cur = app.budget.requireBudget(body.budgetId)
+    await app.auth.requireSameTenant(session, cur.tenantId, 'budget')
+    const row = await app.budget.reviewAdjust(body.budgetId, body.adjustId, !!body.approve, body.note || '', session)
+    return json(res, 200, { ok: true, budget: row })
+  }
+
   // —— 运维：故障注入/续办/跨日（仅平台超管或本地演示令牌）——
   if (method === 'POST' && p === '/api/admin/fault') {
     if (session.identityKind !== 'platform') throw new BizError('FORBIDDEN', '仅平台方可注入故障', 403)
@@ -461,6 +528,7 @@ function dashboard(app, tid) {
     supplierSettled: app.k.state.supplierBills.filter((b) => inT(b) && b.status === 'settled').length,
     supplierPaid: app.k.state.supplierBills.filter((b) => inT(b) && b.status === 'settled').reduce((n, b) => n + (b.payableAmount || 0), 0),
     reconBills: app.k.state.reconBills.filter((b) => inT(b)).length,
-    reconOpen: app.k.state.reconBills.filter((b) => inT(b) && ['pending', 'reviewed'].includes(b.status)).length
+    reconOpen: app.k.state.reconBills.filter((b) => inT(b) && ['pending', 'reviewed'].includes(b.status)).length,
+    budget: app.budget.dashboard(tid)
   }
 }

@@ -193,6 +193,45 @@ async function main() {
   const settleDup = await api('POST', '/api/supplier/bills/settle', { token: finToken, body: { billId } })
   assert(settleDup.status === 409, '重复结算 409')
 
+  console.log('— 营销预算 API：编制审批 / 超额拦截采购 / 冻结阻断 —')
+  const budgetList = await api('GET', '/api/budgets', { token: finToken })
+  assert(budgetList.status === 200 && Array.isArray(budgetList.json.budgets), 'GET /api/budgets 返回预算列表')
+  const bd = await api('GET', '/api/budgets/dashboard', { token: finToken })
+  assert(bd.status === 200 && bd.json.dashboard.total >= 6, `预算看板返回（total=${bd.json.dashboard?.total}）`)
+  // 运营编制活动积分预算（act-1 已有生效积分预算 → 先财务关闭）
+  const closeBg = await api('POST', '/api/budgets/close', { token: finToken, body: { budgetId: 'bg-star-a1p', note: 'HTTP 压测关闭' } })
+  assert(closeBg.status === 200 && closeBg.json.budget.status === 'closed', '财务关闭预算')
+  const createBg = await api('POST', '/api/budgets/create', {
+    token: opsToken, body: { scopeType: 'activity', scopeId: 'act-1', unit: 'points', amount: 30, name: 'HTTP 小预算', startDate: '2026-01-01', endDate: '2026-12-31' }
+  })
+  assert(createBg.status === 200 && createBg.json.budget.status === 'pending', '运营编制预算 → 待审批')
+  const bgId = createBg.json.budget.id
+  const opsBgReview = await api('POST', '/api/budgets/review', { token: opsToken, body: { budgetId: bgId, approve: true } })
+  assert(opsBgReview.status === 403, '运营审批预算 403')
+  const apprBg = await api('POST', '/api/budgets/review', { token: finToken, body: { budgetId: bgId, approve: true } })
+  assert(apprBg.status === 200 && apprBg.json.budget.status === 'active', '财务审批预算生效')
+  // 消费者无权编制
+  const custBg = await api('POST', '/api/budgets/create', { token, body: { scopeType: 'tenant', unit: 'points', amount: 1 } })
+  assert(custBg.status === 403, '消费者编制预算 403')
+  // 预算调整：运营申请、财务审批
+  const adj = await api('POST', '/api/budgets/adjust', { token: opsToken, body: { budgetId: bgId, delta: 10, reason: 'HTTP 调整' } })
+  assert(adj.status === 200 && adj.json.adjustment.status === 'pending', '运营申请预算调整')
+  const adjId = adj.json.adjustment.id
+  const adjAppr = await api('POST', '/api/budgets/adjust-review', { token: finToken, body: { budgetId: bgId, adjustId: adjId, approve: true } })
+  assert(adjAppr.status === 200 && adjAppr.json.budget.amount === 40, '财务审批调整，额度 30→40')
+  // 冻结后采购（活动资金预算仍在，资金采购不受积分预算影响；改为冻结租户资金预算验证采购拦截）
+  const freezeMn = await api('POST', '/api/budgets/freeze', { token: finToken, body: { budgetId: 'bg-star-mn' } })
+  assert(freezeMn.status === 200, '财务冻结租户资金预算')
+  const frozenPo = await api('POST', '/api/purchases/create', {
+    token: opsToken, body: { targetType: 'goods', targetId: 'g3', qty: 1, reason: '冻结期采购', supplierName: 'SX', unitPrice: 10 }
+  })
+  assert(frozenPo.status === 409 && frozenPo.json.error.code === 'BUDGET_FROZEN', `冻结预算下采购 409 BUDGET_FROZEN（${frozenPo.status} ${frozenPo.json?.error?.code}）`)
+  const actMn = await api('POST', '/api/budgets/activate', { token: finToken, body: { budgetId: 'bg-star-mn' } })
+  assert(actMn.status === 200, '解冻租户资金预算')
+  // 预算台账可查
+  const ledger = await api('GET', '/api/budgets/ledger', { token: finToken })
+  assert(ledger.status === 200 && ledger.json.ledger.some((l) => l.category === 'purchase'), '预算占用台账含采购预占/释放记录')
+
   console.log('— 故障注入 → 重启 → 启动自动续办 —')
   // 平台在抽奖扣分后注入故障，触发一次 act-2 抽奖（10 积分）应返回 500
   await api('POST', '/api/admin/fault', { token: pToken, body: { name: 'draw.afterCost' } })

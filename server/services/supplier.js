@@ -12,6 +12,7 @@ export class SupplierService {
     this.k = deps.k
     this.audit = deps.audit
     this.locks = deps.locks
+    this.budget = deps.budget
   }
 
   requirePo(poId) {
@@ -191,6 +192,36 @@ export class SupplierService {
       { type: 'upsert', table: 'supplierBills', row },
       { type: 'upsert', table: 'purchaseOrders', row: poRow }
     ])
+    // 营销预算闭环（结算付款时落账）：
+    //  1) 核销采购单在途预占（按审批数量×协议单价预占的部分）；
+    //  2) 按账单应付金额记实际资金成本（实收合格量×单价，含补发占用扣减）；
+    //  3) 关联缺货补发已履约的，补发件在此结算（不重复计价/入库）。
+    if (this.budget) {
+      const poScopeType = po.targetType === 'prize' ? 'activity' : 'tenant'
+      const poScopeId = po.targetType === 'prize' ? po.activityId : po.tenantId
+      await this.budget.releaseReserved('po', po.id, {
+        category: 'purchase', kind: 'purchase-commit',
+        summary: `供应商结算核销采购预占：${po.targetName}（账单 ${bill0.billNo}）`,
+        tenantId: po.tenantId, traceId: bill0.traceId
+      }, ctx)
+      if (amount.payableAmount > 0) {
+        await this.budget.occupy('settle',
+          { unit: 'money', amount: amount.payableAmount, scopeType: poScopeType, scopeId: poScopeId },
+          {
+            category: 'supplier', kind: 'supplier-payment',
+            refType: 'supplier-bill', refId: bill0.id, bizNo: bill0.billNo,
+            summary: `供应商付款：${po.supplierName}【${po.targetName}】应付 ${amount.payableAmount} 元（实收合格 ${amount.acceptedQty} 件）`,
+            tenantId: po.tenantId, userId: po.applicantId, traceId: bill0.traceId
+          }, ctx)
+      }
+      if (pack.reshipAllocated > 0) {
+        await this.budget.settleReserved('aftersale', po.afterSaleId, {
+          category: 'reship', kind: 'reship-cost',
+          summary: `缺货补发成本随采购结算：${po.targetName} ${pack.reshipAllocated} 件`,
+          traceId: bill0.traceId
+        }, ctx)
+      }
+    }
     await this.audit.log('supplier-settle', bill0.id,
       `结算付款供应商账单 ${bill0.billNo}【${bill0.targetName}】：供应商 ${bill0.supplierName} 应付 ${row.payableAmount} 元（实收合格 ${row.acceptedQty} × ${row.unitPrice}` +
       (row.reshipQty ? ` − 售后补发占用 ${row.reshipQty} 件 ${row.reshipDeduct} 元` : '') + '）；已按采购批次回写库存对账（到货/合格/验退/短少/补发占用逐批勾稽）' +

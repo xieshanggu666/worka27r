@@ -29,6 +29,40 @@ export class TradeService {
     this.ship = deps.ship
     this.tasks = deps.tasks
     this.risk = deps.risk
+    this.budget = deps.budget
+  }
+
+  // 营销预算占用条目（预算与成本控制闭环）：
+  // 抽奖成本=活动积分消耗；积分奖励=抽中的积分奖品；兑换成本=商品积分消耗（均按租户/活动两级预算占用）。
+  _drawBudgetItems(act, prize, cost) {
+    const items = []
+    if (cost > 0) {
+      items.push({ unit: 'points', amount: cost, scopeType: 'activity', scopeId: act.id,
+        category: 'draw', kind: 'draw-cost' })
+    }
+    const pointPrize = prize && prize.name.includes('积分') ? (parseInt(prize.name, 10) || 0) : 0
+    if (pointPrize > 0) {
+      items.push({ unit: 'points', amount: pointPrize, scopeType: 'activity', scopeId: act.id,
+        category: 'points', kind: 'points-reward' })
+    }
+    return items
+  }
+  _redeemBudgetItems(g) {
+    return g.cost > 0
+      ? [{ unit: 'points', amount: g.cost, scopeType: 'tenant', scopeId: g.tenantId || 't-star', category: 'redeem', kind: 'redeem-cost' }]
+      : []
+  }
+  // 预算占用落账（正常落账 settle / 风控冻结 reserve；按记录维度幂等）
+  async _budgetOccupy(mode, items, rec, ctx) {
+    for (const it of items) {
+      await this.budget.occupy(mode, it, {
+        category: it.category, kind: it.kind,
+        refType: 'record', refId: `${rec.id}:${it.kind}`,
+        bizNo: rec.activityName || rec.goodsName || '',
+        summary: `${mode === 'reserve' ? '预占' : '成本'}：${it.kind === 'draw-cost' ? '抽奖参与' : it.kind === 'points-reward' ? '积分奖品' : '积分兑换'}【${rec.prizeName || rec.goodsName}】×${it.amount}${it.unit === 'points' ? ' 积分' : ' 元'}`,
+        tenantId: rec.tenantId, userId: rec.userId, traceId: rec.traceId
+      }, ctx)
+    }
   }
 
   // 业务日切换：到期扫描 + 兜底结算上一业务日全部用户的抽奖任务（幂等），保留冻结权益支持跨日审核
@@ -94,6 +128,9 @@ export class TradeService {
       }
       const prize = drawable[drawByWeight(drawable)]
       const riskHits = this.risk.evalDraw(ctx.tenantId, ctx.userId, live, prize, day)
+      // 营销预算预检：抽奖成本/积分奖励占用超出租户/活动预算（或预算被冻结/关闭）时整笔拦截
+      const budgetItems = this._drawBudgetItems(live, prize, cost)
+      this.budget.guard(budgetItems, act.tenantId)
       const traceId = this.k.newTraceId()
       const recId = genId('r')
       const rec = {
@@ -103,7 +140,8 @@ export class TradeService {
         activityId: act.id, activityName: act.name,
         prizeId: prize.id, prizeName: prize.name, rarity: prize.rarity,
         couponId: prize.couponId || '', icon: prize.emoji,
-        cost, riskHits: riskHits.join(','), processing: true, stages: {}
+        cost, riskHits: riskHits.join(','), processing: true, stages: {},
+        budgetItems
       }
       await this.k.commit([{ type: 'insert', table: 'records', row: rec }])
       if (idemKey) await this.k.commit([{ type: 'idem.put', key: idemKey, result: recId, at: this.k.nowTs() }])
@@ -153,6 +191,12 @@ export class TradeService {
       })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'rewardPoints')
     }
+    // 3.5) 营销预算占用：抽奖成本 + 积分奖励实时占用租户/活动预算（幂等，崩溃续办不重复占用）
+    const curB = this.k.state.records.find((r) => r.id === rec.id)
+    if (!curB.stages.budget) {
+      await this._budgetOccupy('settle', curB.budgetItems || this._drawBudgetItems(act, prize, cost), curB, ctx)
+      await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'budget')
+    }
     // 4) 终态 normal
     const cur2 = this.k.state.records.find((r) => r.id === rec.id)
     await this.k.commit([{ type: 'upsert', table: 'records', row: { ...cur2, status: 'normal', processing: false } }])
@@ -187,6 +231,11 @@ export class TradeService {
       })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'cost')
       this.k.maybeFault('freeze.afterCost')
+    }
+    // 营销预算预占：冻结中的抽奖成本/积分奖励按 reserve 占用预算（放行核销、撤销释放）
+    if (!rec.stages.budget) {
+      await this._budgetOccupy('reserve', rec.budgetItems || this._drawBudgetItems(act, prize, cost), rec, ctx)
+      await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'budget')
     }
     if (prize.rarity !== 'none' && !rec.stages.stock) {
       const target = this.inventory.targetOf('prize', act.id, prize.id)
@@ -230,6 +279,9 @@ export class TradeService {
       if (live.remain <= 0) throw new BizError('ALL_SOLD_OUT', '商品已兑完', 409)
       if (this.points.balanceOf(ctx.userId) < live.cost) throw new BizError('POINTS_NOT_ENOUGH', '积分不足', 409)
       const riskHits = this.risk.evalRedeem(ctx.tenantId, ctx.userId, live)
+      // 营销预算预检：兑换成本占用超出租户积分预算（或预算被冻结/关闭）时整笔拦截
+      const budgetItems = this._redeemBudgetItems(live)
+      this.budget.guard(budgetItems, live.tenantId || 't-star')
       const traceId = this.k.newTraceId()
       const recId = genId('rg')
       const rec = {
@@ -237,7 +289,8 @@ export class TradeService {
         tenantId: live.tenantId || 't-star', userId: ctx.userId, userName: ctx.name,
         traceId, date: this.k.todayDate(), time: this.k.nowTime(), ts: this.k.nowTs(),
         goodsId: live.id, goodsName: live.name, couponId: live.couponId || '', icon: live.icon,
-        cost: live.cost, riskHits: riskHits.join(','), processing: true, stages: {}
+        cost: live.cost, riskHits: riskHits.join(','), processing: true, stages: {},
+        budgetItems
       }
       await this.k.commit([{ type: 'insert', table: 'records', row: rec }])
       if (idemKey) await this.k.commit([{ type: 'idem.put', key: idemKey, result: recId, at: this.k.nowTs() }])
@@ -260,6 +313,11 @@ export class TradeService {
       })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'cost')
       this.k.maybeFault('redeem.afterCost')
+    }
+    // 营销预算占用：兑换成本实时占用租户积分预算（幂等）
+    if (!rec.stages.budget) {
+      await this._budgetOccupy('settle', rec.budgetItems || this._redeemBudgetItems(g), rec, ctx)
+      await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'budget')
     }
     if (!rec.stages.stock) {
       const target = this.inventory.targetOf('goods', null, g.id)
@@ -293,6 +351,11 @@ export class TradeService {
       })
       await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'cost')
       this.k.maybeFault('freeze.afterCost')
+    }
+    // 营销预算预占：冻结中的兑换成本按 reserve 占用预算（放行核销、撤销释放）
+    if (!rec.stages.budget) {
+      await this._budgetOccupy('reserve', rec.budgetItems || this._redeemBudgetItems(g), rec, ctx)
+      await this._stage(this.k.state.records.find((r) => r.id === rec.id), 'budget')
     }
     if (!rec.stages.stock) {
       const target = this.inventory.targetOf('goods', null, g.id)
@@ -348,7 +411,7 @@ export class TradeService {
       if (!prize) return false
       const riskHits = (rec.riskHits || '').split(',').filter(Boolean)
       if (riskHits.length) {
-        // 冻结分支续办：成本/库存事件本身幂等，补执行也不重复扣；审核单已存在则仅收尾
+        // 冻结分支续办：成本/库存/预算占用事件本身幂等，补执行也不重复扣；审核单已存在则仅收尾
         const live = this.k.state.records.find((x) => x.id === rec.id)
         if (rec.cost > 0) {
           await this.points.post({
@@ -357,6 +420,7 @@ export class TradeService {
             refId: `freeze-cost:${rec.id}`, refType: 'risk-freeze', traceId
           })
         }
+        await this._budgetOccupy('reserve', live.budgetItems || this._drawBudgetItems(act, prize, rec.cost || 0), live, ctx)
         if (prize.rarity !== 'none') {
           const target = this.inventory.targetOf('prize', act.id, prize.id)
           await this.k.commit([
@@ -393,6 +457,7 @@ export class TradeService {
           kind: 'frozen', tenantId: g.tenantId,
           refId: `freeze-cost:${rec.id}`, refType: 'risk-freeze', traceId
         })
+        await this._budgetOccupy('reserve', live.budgetItems || this._redeemBudgetItems(g), live, ctx)
         const target = this.inventory.targetOf('goods', null, g.id)
         await this.k.commit([
           { type: 'inv.mut', key: target.key, dRemain: -1, dFrozen: 1, effectId: `freeze-stock:${rec.id}` }

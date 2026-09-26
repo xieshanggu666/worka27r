@@ -42,9 +42,9 @@ export const ACTIVITIES = [
     startAt: '2026-09-01',
     endAt: '2026-10-01',
     prizes: [
-      { id: 'p1', name: 'iPhone 16', rarity: 'legendary', stock: 3, remain: 3, weight: 1, emoji: '📱', physical: true },
-      { id: 'p2', name: '500元购物卡', rarity: 'epic', stock: 20, remain: 20, weight: 4, emoji: '💳', physical: true },
-      { id: 'p3', name: '定制保温杯', rarity: 'rare', stock: 150, remain: 150, weight: 15, emoji: '☕', physical: true },
+      { id: 'p1', name: 'iPhone 16', rarity: 'legendary', stock: 3, remain: 3, weight: 1, emoji: '📱', physical: true, unitPrice: 5999 },
+      { id: 'p2', name: '500元购物卡', rarity: 'epic', stock: 20, remain: 20, weight: 4, emoji: '💳', physical: true, unitPrice: 500 },
+      { id: 'p3', name: '定制保温杯', rarity: 'rare', stock: 150, remain: 150, weight: 15, emoji: '☕', physical: true, unitPrice: 12.5 },
       { id: 'p4', name: '30积分', rarity: 'rare', stock: 500, remain: 500, weight: 30, emoji: '🪙', physical: false },
       { id: 'p5', name: '5积分', rarity: 'common', stock: 2000, remain: 2000, weight: 50, emoji: '✨', physical: false },
       { id: 'p6', name: '谢谢参与', rarity: 'none', stock: 99999, remain: 99999, weight: 100, emoji: '🤝', physical: false }
@@ -65,7 +65,7 @@ export const ACTIVITIES = [
     endAt: '2026-09-30',
     prizes: [
       { id: 'p1', name: '蓝牙耳机', rarity: 'legendary', stock: 5, remain: 5, weight: 1, emoji: '🎧', physical: true },
-      { id: 'p2', name: '视频月卡', rarity: 'epic', stock: 50, remain: 50, weight: 6, emoji: '🎬', physical: false, couponId: 'c-video-month' },
+      { id: 'p2', name: '视频月卡', rarity: 'epic', stock: 50, remain: 50, weight: 6, emoji: '🎬', physical: false, couponId: 'c-video-month', unitPrice: 25 },
       { id: 'p3', name: '20积分', rarity: 'rare', stock: 400, remain: 400, weight: 25, emoji: '🪙', physical: false },
       { id: 'p4', name: '5积分', rarity: 'common', stock: 800, remain: 800, weight: 50, emoji: '✨', physical: false },
       { id: 'p5', name: '谢谢参与', rarity: 'none', stock: 99999, remain: 99999, weight: 100, emoji: '🤝', physical: false }
@@ -114,13 +114,13 @@ export const COUPONS = [
 // 积分商城兑换商品（physical: 是否需要物流发货——实物填写收货信息、运营发货；
 // couponId: 券类虚拟商品——中奖/兑换发券至卡券账户，运营扫码核销；其余虚拟商品直接到账）
 export const SHOP_GOODS = [
-  { id: 'g1', name: '满50减10优惠券', cost: 30, icon: '🎟️', stock: 200, remain: 200, physical: false, couponId: 'c-discount-10' },
-  { id: 'g2', name: '视频会员周卡', cost: 80, icon: '🎬', stock: 100, remain: 100, physical: false, couponId: 'c-video-week' },
-  { id: 'g3', name: '定制帆布袋', cost: 150, icon: '👜', stock: 50, remain: 50, physical: true },
-  { id: 'g4', name: '盲盒福袋', cost: 200, icon: '🎁', stock: 30, remain: 30, physical: true },
-  { id: 'g5', name: '与牛人共进午餐', cost: 500, icon: '🍽️', stock: 5, remain: 5, physical: false },
+  { id: 'g1', name: '满50减10优惠券', cost: 30, icon: '🎟️', stock: 200, remain: 200, physical: false, couponId: 'c-discount-10', unitPrice: 8 },
+  { id: 'g2', name: '视频会员周卡', cost: 80, icon: '🎬', stock: 100, remain: 100, physical: false, couponId: 'c-video-week', unitPrice: 6 },
+  { id: 'g3', name: '定制帆布袋', cost: 150, icon: '👜', stock: 50, remain: 50, physical: true, unitPrice: 22 },
+  { id: 'g4', name: '盲盒福袋', cost: 200, icon: '🎁', stock: 30, remain: 30, physical: true, unitPrice: 9.9 },
+  { id: 'g5', name: '与牛人共进午餐', cost: 500, icon: '🍽️', stock: 5, remain: 5, physical: false, unitPrice: 300 },
   // 限量实物：种子中 2 件已兑完（其中 1 笔补发售后因缺货挂起，等待采购入库后继续履约）
-  { id: 'g6', name: '限量联名公仔', cost: 300, icon: '🧸', stock: 2, remain: 2, physical: true }
+  { id: 'g6', name: '限量联名公仔', cost: 300, icon: '🧸', stock: 2, remain: 2, physical: true, unitPrice: 18 }
 ]
 
 export const DEMO_USER = {

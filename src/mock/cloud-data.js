@@ -16,8 +16,8 @@ export const CLOUD_ACTIVITIES = [
     startAt: '2026-09-12',
     endAt: '2026-10-12',
     prizes: [
-      { id: 'cp1', name: '云雀 SVIP 季卡', rarity: 'legendary', stock: 3, remain: 3, weight: 1, emoji: '💎', physical: false, couponId: 'cc-svip' },
-      { id: 'cp2', name: '云雀新人立减券', rarity: 'epic', stock: 80, remain: 80, weight: 10, emoji: '🐦', physical: false, couponId: 'cc-welcome' },
+      { id: 'cp1', name: '云雀 SVIP 季卡', rarity: 'legendary', stock: 3, remain: 3, weight: 1, emoji: '💎', physical: false, couponId: 'cc-svip', unitPrice: 68 },
+      { id: 'cp2', name: '云雀新人立减券', rarity: 'epic', stock: 80, remain: 80, weight: 10, emoji: '🐦', physical: false, couponId: 'cc-welcome', unitPrice: 5 },
       { id: 'cp3', name: '云雀积分 10 分', rarity: 'common', stock: 200, remain: 200, weight: 40, emoji: '✨', physical: false },
       { id: 'cp4', name: '谢谢参与', rarity: 'none', stock: 99999, remain: 99999, weight: 100, emoji: '🤝', physical: false }
     ]
@@ -25,6 +25,6 @@ export const CLOUD_ACTIVITIES = [
 ]
 
 export const CLOUD_GOODS = [
-  { id: 'cg1', name: '云雀新人立减券', cost: 0, icon: '🐦', stock: 120, remain: 120, physical: false, couponId: 'cc-welcome' },
-  { id: 'cg2', name: '云雀定制马克杯', cost: 60, icon: '☕', stock: 40, remain: 40, physical: true }
+  { id: 'cg1', name: '云雀新人立减券', cost: 0, icon: '🐦', stock: 120, remain: 120, physical: false, couponId: 'cc-welcome', unitPrice: 5 },
+  { id: 'cg2', name: '云雀定制马克杯', cost: 60, icon: '☕', stock: 40, remain: 40, physical: true, unitPrice: 15 }
 ]

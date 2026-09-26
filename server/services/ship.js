@@ -11,11 +11,12 @@ const TRACE_FLOW = (o) => [
 ]
 
 export class ShipService {
-  constructor(k, audit, points, inventory) {
+  constructor(k, audit, points, inventory, budget) {
     this.k = k
     this.audit = audit
     this.points = points
     this.inventory = inventory
+    this.budget = budget
   }
 
   isPhysical(rec) {
@@ -227,6 +228,23 @@ export class ShipService {
     const target = this.inventory.targetOf(as.targetType, as.activityId, as.targetId)
     if (as.type === 'reship' && target.row.remain <= 0) {
       // 缺货：售后单挂起「待补货」（不动账），采购验收入库后可从待处理售后继续履约
+      // 补发资金成本实时预占（待采购结算时核销，不重复付款）；
+      // 已有关联采购单在途的（采购预占已覆盖补发件）不重复预占
+      const linkedPo = this.k.state.purchaseOrders.find((po) =>
+        (po.tenantId || 't-star') === as.tenantId && po.afterSaleId === as.id &&
+        ['pending', 'approved', 'receiving'].includes(po.status))
+      const reshipPrice = Math.round(Number(target.row.unitPrice) * 100) / 100 || 0
+      if (this.budget && reshipPrice > 0 && !linkedPo) {
+        await this.budget.occupy('reserve',
+          { unit: 'money', amount: reshipPrice, scopeType: as.targetType === 'prize' ? 'activity' : 'tenant',
+            scopeId: as.targetType === 'prize' ? as.activityId : as.tenantId },
+          {
+            category: 'reship', kind: 'reship-cost',
+            refType: 'aftersale', refId: as.id, bizNo: o.id,
+            summary: `缺货补发预占：【${as.targetName}】×1，估价 ${reshipPrice} 元（挂起待采购，结算时核销不重复付款）`,
+            tenantId: as.tenantId, userId: as.userId, traceId
+          }, ctx)
+      }
       const row = {
         ...as,
         status: 'waiting_stock',
@@ -249,12 +267,40 @@ export class ShipService {
           note: `售后退款：${as.typeLabel}【${as.targetName}】（发货单 ${o.id}）`,
           kind: 'refund', tenantId: as.tenantId, refId: as.id, refType: 'after-sale', traceId
         })
+        // 营销预算：退货/拒收按申请时快照冲回已占用的积分成本（append-only，预算余额恢复）
+        if (this.budget) {
+          await this.budget.refund(
+            { unit: 'points', amount: as.refundPoints, scopeType: 'tenant', scopeId: as.tenantId },
+            {
+              category: o.bizType === 'draw' ? 'draw' : 'redeem',
+              kind: o.bizType === 'draw' ? 'draw-refund' : 'redeem-refund',
+              refType: 'aftersale', refId: as.id, bizNo: o.id,
+              summary: `售后退款冲回预算：${as.typeLabel}【${as.targetName}】+${as.refundPoints} 积分`,
+              tenantId: as.tenantId, userId: as.userId, traceId
+            }, ctx)
+        }
       }
       const shipRow = { ...o, status: 'returned', returnedAt: `${this.k.todayDate()} ${this.k.nowTime()}`, afterSaleId: as.id }
       await this.k.commit([{ type: 'upsert', table: 'shipments', row: shipRow }])
       await this.appendTrace(this.requireShipment(o.id), 'returned',
         as.type === 'reject' ? '收件人拒收，包裹退回发货仓' : '退货包裹已退回发货仓，售后完成')
     } else {
+      // 补发资金成本（按 SKU 采购成本口径 unitPrice 估算，0 表示未维护成本不占用）；
+      // 关联采购单已在途的（缺货挂起→采购入库）补发成本已在采购付款中结算，不重复占用
+      const linkedPo = this.k.state.purchaseOrders.find((po) =>
+        (po.tenantId || 't-star') === as.tenantId && po.afterSaleId === as.id)
+      const reshipPrice = Math.round(Number(target.row.unitPrice) * 100) / 100 || 0
+      if (this.budget && reshipPrice > 0 && !(continuing && linkedPo)) {
+        await this.budget.occupy('settle',
+          { unit: 'money', amount: reshipPrice, scopeType: as.targetType === 'prize' ? 'activity' : 'tenant',
+            scopeId: as.targetType === 'prize' ? as.activityId : as.tenantId },
+          {
+            category: 'reship', kind: 'reship-cost',
+            refType: 'aftersale', refId: as.id, bizNo: o.id,
+            summary: `售后补发成本：【${as.targetName}】×1，估价 ${reshipPrice} 元`,
+            tenantId: as.tenantId, userId: as.userId, traceId
+          }, ctx)
+      }
       await this.inventory.deduct(target, 1)
       const reship = {
         id: genId('sp'), recordId: o.recordId, bizType: o.bizType, status: 'to_ship',

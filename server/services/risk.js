@@ -34,6 +34,22 @@ export class RiskService {
     this.coupons = deps.coupons
     this.ship = deps.ship
     this.tasks = deps.tasks
+    this.budget = deps.budget
+  }
+
+  // 营销预算：风控审核时核销/释放该记录的全部预算预占（按 recordId 匹配 reserve 台账，幂等）
+  async _budgetConvert(rec, direction, ctx, traceId) {
+    if (!this.budget) return
+    const kinds = rec.type === 'draw' ? ['draw-cost', 'points-reward'] : ['redeem-cost']
+    for (const kind of kinds) {
+      const refs = {
+        category: kind === 'redeem-cost' ? 'redeem' : kind === 'draw-cost' ? 'draw' : 'points',
+        kind, traceId: traceId || rec.traceId,
+        summary: `${direction === 'settle' ? '风控放行核销预占' : '风控撤销释放预占'}：${rec.prizeName || rec.goodsName}`
+      }
+      if (direction === 'settle') await this.budget.settleReserved('record', `${rec.id}:${kind}`, refs, ctx)
+      else await this.budget.releaseReserved('record', `${rec.id}:${kind}`, refs, ctx)
+    }
   }
 
   rulesOf(tenantId) {
@@ -201,6 +217,12 @@ export class RiskService {
       this.k.maybeFault('release.afterConsume')
     }
 
+    // 1.5) 营销预算：冻结预占核销为实际成本（放行即确认营销支出，幂等）
+    if (!o0.stages.budget) {
+      await this._budgetConvert(rec, 'settle', ctx, traceId)
+      await this._setStage(this.k.state.riskOrders.find((x) => x.id === orderId), 'budget')
+    }
+
     // 2) 积分奖品放行才入账（归属原参与业务日 bizDate；跨日审核流水续在链尾、对账不串当日）
     if (o0.bizType === 'draw') {
       const n = parseInt(o0.targetName, 10) || 0
@@ -269,6 +291,12 @@ export class RiskService {
       })
       await this._setStage(this.k.state.riskOrders.find((x) => x.id === orderId), 'refund')
       this.k.maybeFault('revoke.afterRefund')
+    }
+
+    // 1.5) 营销预算：冻结预占释放（撤销即冲回营销支出占用，幂等）
+    if (!o0.stages.budget) {
+      await this._budgetConvert(rec, 'release', ctx, traceId)
+      await this._setStage(this.k.state.riskOrders.find((x) => x.id === orderId), 'budget')
     }
 
     // 2) 库存回补 + frozen 释放（幂等 effectId）

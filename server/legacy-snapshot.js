@@ -30,6 +30,8 @@ export function extractLegacySnapshot() {
     afterSales: JSON.parse(JSON.stringify(s.afterSales)),
     reconBills: JSON.parse(JSON.stringify(s.reconBills)),
     stockAdjustments: JSON.parse(JSON.stringify(s.stockAdjustments)),
+    budgets: JSON.parse(JSON.stringify(s.budgets)),
+    budgetLedger: JSON.parse(JSON.stringify(s.budgetLedger)),
     auditLogs: JSON.parse(JSON.stringify(s.auditLogs)),
     legacyPoints: s.points
   }

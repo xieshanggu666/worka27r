@@ -32,6 +32,14 @@ export const PERMISSION_GROUPS = [
     ]
   },
   {
+    group: '预算与成本',
+    icon: '💰',
+    perms: [
+      { key: 'budget:manage', name: '预算编制与调整申请（租户/活动预算）' },
+      { key: 'budget:approve', name: '预算财务审批（生效/驳回/冻结/关闭）' }
+    ]
+  },
+  {
     group: '物流与售后',
     icon: '📦',
     perms: [
@@ -84,9 +92,9 @@ export const ROLE_TEMPLATES = [
   },
   {
     key: 'ops_activity', name: '活动运营', builtin: true,
-    desc: '负责抽奖活动与积分任务运营，可管理活动、发起奖品/商品采购、发起供应商账单、查看积分台账',
+    desc: '负责抽奖活动与积分任务运营，可管理活动、发起奖品/商品采购、发起供应商账单、编制预算与调整申请、查看积分台账',
     icon: '🎪',
-    permissions: ['activity:manage', 'points:view', 'ship:trace', 'purchase:apply', 'supplier:bill']
+    permissions: ['activity:manage', 'points:view', 'ship:trace', 'purchase:apply', 'supplier:bill', 'budget:manage']
   },
   {
     key: 'risk_analyst', name: '风控专员', builtin: true,
@@ -102,10 +110,10 @@ export const ROLE_TEMPLATES = [
   },
   {
     key: 'finance_auditor', name: '财务对账', builtin: true,
-    desc: '负责采购审批、供应商账单复核与结算、卡券核销、积分库存对账、复核补偿与全链路审计查看（只读业务运营）',
+    desc: '负责预算财务审批、采购审批、供应商账单复核与结算、卡券核销、积分库存对账、复核补偿与全链路审计查看（只读业务运营）',
     icon: '🧮',
     permissions: ['coupon:redeem', 'recon:run', 'recon:review', 'recon:compensate', 'audit:view', 'points:view',
-      'purchase:approve', 'supplier:review', 'supplier:settle']
+      'budget:approve', 'purchase:approve', 'supplier:review', 'supplier:settle']
   },
   {
     key: 'service_readonly', name: '客服（只读）', builtin: true,
@@ -136,7 +144,7 @@ export const TENANTS = [
     phone: '138****8888',
     region: '华东 · 上海',
     createdAt: '2026-01-15',
-    modules: ['抽奖活动', '积分中心', '风控申诉', '物流发货', '售后补发', '采购入库', '卡券核销', '积分库存对账'],
+    modules: ['抽奖活动', '积分中心', '风控申诉', '物流发货', '售后补发', '采购入库', '供应商结算', '预算成本', '卡券核销', '积分库存对账'],
     dataIsolation: '强隔离：活动/库存/单据/卡券/对账按 tenantId 物理标记，查询与操作强制带租户上下文',
     remark: '默认演示租户：全部种子业务数据归属本租户'
   },
@@ -151,7 +159,7 @@ export const TENANTS = [
     phone: '139****6666',
     region: '华东 · 杭州',
     createdAt: '2026-05-08',
-    modules: ['抽奖活动', '积分中心', '风控申诉', '物流发货', '售后补发', '采购入库', '卡券核销', '积分库存对账'],
+    modules: ['抽奖活动', '积分中心', '风控申诉', '物流发货', '售后补发', '采购入库', '供应商结算', '预算成本', '卡券核销', '积分库存对账'],
     dataIsolation: '强隔离：与星河商贸数据互不可见，仅平台方账号可跨租户切换',
     remark: '第二租户：用于演示数据隔离（自有活动/商品/卡券/审核单/发货单）'
   }

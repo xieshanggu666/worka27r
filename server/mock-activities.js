@@ -12,9 +12,9 @@ export const ACTIVITIES = [
     icon: '🎡',
     desc: '周年庆回馈老用户，转盘好礼送不停',
     prizes: [
-      { id: 'p1', name: 'iPhone 16', rarity: 'legendary', stock: 3, remain: 3, frozen: 0, weight: 1, emoji: '📱', physical: true },
-      { id: 'p2', name: '500元购物卡', rarity: 'epic', stock: 20, remain: 20, frozen: 0, weight: 4, emoji: '💳', physical: true },
-      { id: 'p3', name: '定制保温杯', rarity: 'rare', stock: 150, remain: 150, frozen: 0, weight: 15, emoji: '☕', physical: true },
+      { id: 'p1', name: 'iPhone 16', unitPrice: 5999, rarity: 'legendary', stock: 3, remain: 3, frozen: 0, weight: 1, emoji: '📱', physical: true },
+      { id: 'p2', name: '500元购物卡', unitPrice: 500, rarity: 'epic', stock: 20, remain: 20, frozen: 0, weight: 4, emoji: '💳', physical: true },
+      { id: 'p3', name: '定制保温杯', unitPrice: 12.5, rarity: 'rare', stock: 150, remain: 150, frozen: 0, weight: 15, emoji: '☕', physical: true },
       { id: 'p4', name: '30积分', rarity: 'rare', stock: 500, remain: 500, frozen: 0, weight: 30, emoji: '🪙', physical: false },
       { id: 'p5', name: '5积分', rarity: 'common', stock: 2000, remain: 2000, frozen: 0, weight: 50, emoji: '✨', physical: false },
       { id: 'p6', name: '谢谢参与', rarity: 'none', stock: 99999, remain: 99999, frozen: 0, weight: 100, emoji: '🤝', physical: false }
@@ -32,8 +32,8 @@ export const ACTIVITIES = [
     icon: '🎰',
     desc: '新用户专区，消耗积分刮取惊喜',
     prizes: [
-      { id: 'p1', name: '蓝牙耳机', rarity: 'legendary', stock: 5, remain: 5, frozen: 0, weight: 1, emoji: '🎧', physical: true },
-      { id: 'p2', name: '视频月卡', rarity: 'epic', stock: 50, remain: 50, frozen: 0, weight: 6, emoji: '🎬', physical: false, couponId: 'c-video-month' },
+      { id: 'p1', name: '蓝牙耳机', unitPrice: 199, rarity: 'legendary', stock: 5, remain: 5, frozen: 0, weight: 1, emoji: '🎧', physical: true },
+      { id: 'p2', name: '视频月卡', unitPrice: 25, rarity: 'epic', stock: 50, remain: 50, frozen: 0, weight: 6, emoji: '🎬', physical: false, couponId: 'c-video-month' },
       { id: 'p3', name: '20积分', rarity: 'rare', stock: 400, remain: 400, frozen: 0, weight: 25, emoji: '🪙', physical: false },
       { id: 'p4', name: '5积分', rarity: 'common', stock: 800, remain: 800, frozen: 0, weight: 50, emoji: '✨', physical: false },
       { id: 'p5', name: '谢谢参与', rarity: 'none', stock: 99999, remain: 99999, frozen: 0, weight: 100, emoji: '🤝', physical: false }

@@ -4,10 +4,11 @@
 import { genId } from '../util.js'
 
 export class TaskService {
-  constructor(k, audit, points) {
+  constructor(k, audit, points, budget) {
     this.k = k
     this.audit = audit
     this.points = points
+    this.budget = budget
   }
 
   validDrawCount(bizDate, tenantId, userId) {
@@ -56,6 +57,18 @@ export class TaskService {
         source: 'auto', flowId: flow.id
       }
       await this.k.commit([{ type: 'insert', table: 'taskClaims', row: claim }])
+      // 营销预算占用：任务积分奖励实时占用租户积分预算（按台账 id 幂等，重跑/跨日补计不重复占用）
+      if (this.budget) {
+        await this.budget.occupy('settle',
+          { unit: 'points', amount: t.reward, scopeType: 'tenant', scopeId: tenantId },
+          {
+            category: 'points', kind: 'task-reward',
+            refType: 'task-claim', refId: claimId, bizNo: t.label,
+            summary: `任务奖励：${t.label} +${t.reward} 积分`,
+            tenantId, userId, traceId
+          },
+          { name: '系统', userId, tenantId })
+      }
       await this.audit.log('task-settle', '',
         `【${this.k.state.tenants.find((x) => x.id === tenantId)?.shortName || tenantId}】用户【${userId}】抽奖任务【${t.label}】达成（${date} 有效参与 ${valid}/${t.goal}），自动发放 ${t.reward} 积分${crossDay ? '（跨日审核补计）' : ''}`,
         { tenantId, traceId })

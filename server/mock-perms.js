@@ -8,9 +8,9 @@ export const ROLE_TEMPLATES = [
   },
   {
     key: 'ops_activity', name: '活动运营', builtin: true,
-    desc: '负责抽奖活动与积分任务运营，可管理活动、发起奖品/商品采购、发起供应商账单、查看积分台账',
+    desc: '负责抽奖活动与积分任务运营，可管理活动、发起奖品/商品采购、发起供应商账单、编制预算与调整申请、查看积分台账',
     icon: '🎪',
-    permissions: ['activity:manage', 'points:view', 'ship:trace', 'purchase:apply', 'supplier:bill']
+    permissions: ['activity:manage', 'points:view', 'ship:trace', 'purchase:apply', 'supplier:bill', 'budget:manage']
   },
   {
     key: 'risk_analyst', name: '风控专员', builtin: true,
@@ -26,10 +26,10 @@ export const ROLE_TEMPLATES = [
   },
   {
     key: 'finance_auditor', name: '财务对账', builtin: true,
-    desc: '负责采购审批、供应商账单复核与结算、卡券核销、积分库存对账、复核补偿与全链路审计查看（只读业务运营）',
+    desc: '负责预算财务审批、采购审批、供应商账单复核与结算、卡券核销、积分库存对账、复核补偿与全链路审计查看（只读业务运营）',
     icon: '🧮',
     permissions: ['coupon:redeem', 'recon:run', 'recon:review', 'recon:compensate', 'audit:view', 'points:view',
-      'purchase:approve', 'supplier:review', 'supplier:settle']
+      'budget:approve', 'purchase:approve', 'supplier:review', 'supplier:settle']
   },
   {
     key: 'service_readonly', name: '客服（只读）', builtin: true,
@@ -57,6 +57,8 @@ export const PERMISSION_LABELS = {
   'purchase:apply': '发起采购申请',
   'purchase:approve': '采购审批',
   'purchase:inbound': '分批验收入库',
+  'budget:manage': '预算编制与调整申请',
+  'budget:approve': '预算财务审批',
   'supplier:bill': '发起供应商账单',
   'supplier:review': '供应商账单复核',
   'supplier:settle': '供应商结算付款',

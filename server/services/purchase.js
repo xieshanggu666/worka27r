@@ -4,11 +4,37 @@
 import { genId, BizError } from '../util.js'
 
 export class PurchaseService {
-  constructor(k, audit, inventory, locks) {
+  constructor(k, audit, inventory, locks, budget) {
     this.k = k
     this.audit = audit
     this.inventory = inventory
     this.locks = locks
+    this.budget = budget
+  }
+
+  // 采购预算占用条目：按「数量 × 协议单价」预占资金预算（活动奖品同时落活动预算与租户预算）
+  _poBudgetItem(po) {
+    return {
+      unit: 'money', amount: Math.round(po.qty * po.unitPrice * 100) / 100,
+      scopeType: po.targetType === 'prize' ? 'activity' : 'tenant',
+      scopeId: po.targetType === 'prize' ? po.activityId : po.tenantId
+    }
+  }
+  async _poBudgetReserve(po, ctx) {
+    if (!this.budget) return
+    await this.budget.occupy('reserve', this._poBudgetItem(po), {
+      category: 'purchase', kind: 'purchase-commit',
+      refType: 'po', refId: po.id, bizNo: po.poNo,
+      summary: `采购预占：${po.targetName} ×${po.qty}（${po.supplierName}，协议单价 ${po.unitPrice} 元）`,
+      tenantId: po.tenantId, userId: po.applicantId, traceId: po.traceId
+    }, ctx)
+  }
+  async _poBudgetRelease(po, refs, ctx) {
+    if (!this.budget) return
+    await this.budget.releaseReserved('po', po.id, {
+      category: 'purchase', kind: 'purchase-commit',
+      summary: refs, tenantId: po.tenantId, traceId: po.traceId
+    }, ctx)
   }
 
   requireOrder(poId) {
@@ -47,6 +73,13 @@ export class PurchaseService {
     if (!(unitPrice > 0)) throw new BizError('BAD_FORM', '请填写正确的协议单价（>0）')
     if (unitPrice > 1000000) throw new BizError('BAD_FORM', '单价异常，请核对后再提交')
 
+    // 营销预算预检：采购承诺金额（数量 × 协议单价）超出预算（或预算被冻结/关闭）时整单拦截
+    const scopeType = targetType === 'prize' ? 'activity' : 'tenant'
+    const scopeId = targetType === 'prize' ? form.activityId : ctx.tenantId
+    this.budget?.guard(
+      [{ unit: 'money', amount: Math.round(qty * unitPrice * 100) / 100, scopeType, scopeId, category: 'purchase', kind: 'purchase-commit' }],
+      ctx.tenantId)
+
     // 关联待补货售后单（缺货补发履约链路）
     let linked = null
     if (form.afterSaleId) {
@@ -84,6 +117,8 @@ export class PurchaseService {
       batches: []
     }
     await this.k.commit([{ type: 'insert', table: 'purchaseOrders', row: po }])
+    // 营销预算：采购承诺金额实时预占（审批驳回/申请人撤销时释放，供应商结算时核销转实际付款）
+    await this._poBudgetReserve(po, ctx)
     await this.audit.log('purchase-apply', po.id,
       `发起采购【${t.targetName}】×${qty}（${targetType === 'prize' ? '活动奖品' : '商城商品'}，供应商：${supplierName}，协议单价 ${unitPrice} 元，事由：${reason}）` +
       (linked ? `；关联待补货售后单 ${linked.id}，入库后继续补发履约` : ''),
@@ -101,6 +136,8 @@ export class PurchaseService {
     }
     const row = { ...po, status: 'canceled', approveNote: '申请人撤销' }
     await this.k.commit([{ type: 'upsert', table: 'purchaseOrders', row }])
+    // 营销预算：撤销即释放采购预占
+    await this._poBudgetRelease(po, `采购撤销释放预占：${po.targetName} ×${po.qty}`, ctx)
     await this.audit.log('purchase-cancel', po.id,
       `撤销采购申请【${po.targetName}】×${po.qty}（审批前撤回，库存未变动）`,
       { tenantId: po.tenantId, ctx })
@@ -119,6 +156,8 @@ export class PurchaseService {
       approver: ctx.name, approveNote: remark
     }
     await this.k.commit([{ type: 'upsert', table: 'purchaseOrders', row }])
+    // 营销预算：审批驳回即释放采购预占（通过则保留预占，待供应商结算时核销转实际付款）
+    if (!approve) await this._poBudgetRelease(po, `采购驳回释放预占：${po.targetName} ×${po.qty}`, ctx)
     await this.audit.log(approve ? 'purchase-approve' : 'purchase-reject', po.id,
       approve
         ? `审批通过采购【${po.targetName}】×${po.qty}（申请人 ${po.applicant}），等待仓配分批验收入库${remark ? '；备注：' + remark : ''}`

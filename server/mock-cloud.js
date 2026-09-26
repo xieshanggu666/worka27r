@@ -17,14 +17,14 @@ export const CLOUD_ACTIVITIES = [
     icon: '🐦',
     desc: '庆祝云雀数科上线，0 积分抽 SVIP 好礼',
     prizes: [
-      { id: 'cp1', name: '云雀 SVIP 季卡', rarity: 'legendary', stock: 10, remain: 10, frozen: 0, weight: 1, emoji: '💎', physical: false, couponId: 'cc-svip' },
-      { id: 'cp2', name: '云雀定制马克杯', rarity: 'rare', stock: 100, remain: 100, frozen: 0, weight: 20, emoji: '☕', physical: true },
+      { id: 'cp1', name: '云雀 SVIP 季卡', unitPrice: 68, rarity: 'legendary', stock: 10, remain: 10, frozen: 0, weight: 1, emoji: '💎', physical: false, couponId: 'cc-svip' },
+      { id: 'cp2', name: '云雀定制马克杯', unitPrice: 15, rarity: 'rare', stock: 100, remain: 100, frozen: 0, weight: 20, emoji: '☕', physical: true },
       { id: 'cp3', name: '谢谢参与', rarity: 'none', stock: 99999, remain: 99999, frozen: 0, weight: 100, emoji: '🤝', physical: false }
     ]
   }
 ]
 
 export const CLOUD_GOODS = [
-  { id: 'cg1', name: '云雀新人立减券', cost: 0, icon: '🐦', stock: 200, remain: 200, physical: false, couponId: 'cc-welcome' },
-  { id: 'cg2', name: '云雀定制马克杯', cost: 60, icon: '☕', stock: 80, remain: 80, physical: true }
+  { id: 'cg1', name: '云雀新人立减券', cost: 0, unitPrice: 5, icon: '🐦', stock: 200, remain: 200, physical: false, couponId: 'cc-welcome' },
+  { id: 'cg2', name: '云雀定制马克杯', cost: 60, unitPrice: 15, icon: '☕', stock: 80, remain: 80, physical: true }
 ]

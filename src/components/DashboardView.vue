@@ -167,6 +167,31 @@
         <div class="s-num" style="color:#ffd54f">¥{{ Number(store.dashboard.supplierPaid || 0).toFixed(0) }}</div>
         <div class="s-lab">累计已付供应商</div>
       </div>
+      <div class="stat-card budget">
+        <span class="s-icon">💹</span>
+        <div class="s-num warn">{{ store.dashboard.budgetPending }}</div>
+        <div class="s-lab">预算待财务审批</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">✅</span>
+        <div class="s-num ok">{{ store.dashboard.budgetActive }}</div>
+        <div class="s-lab">生效中预算</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">⛔</span>
+        <div class="s-num" style="color:#ef9a9a">{{ store.dashboard.budgetOverrun }}</div>
+        <div class="s-lab">超支预算</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">🪙</span>
+        <div class="s-num" style="color:#ffd54f">{{ Number(store.dashboard.budgetOccupiedPoints || 0).toLocaleString() }}</div>
+        <div class="s-lab">积分预算已占用</div>
+      </div>
+      <div class="stat-card budget">
+        <span class="s-icon">💰</span>
+        <div class="s-num" style="color:#ce93d8">¥{{ Number(store.dashboard.budgetOccupiedMoney || 0).toFixed(0) }}</div>
+        <div class="s-lab">资金预算已占用</div>
+      </div>
       <div class="stat-card coupon">
         <span class="s-icon">🎟️</span>
         <div class="s-num coupon-n">{{ store.dashboard.couponIssued }}</div>
@@ -291,6 +316,7 @@ const scopedRecords = computed(() =>
 .stat-card.recon { border-color: rgba(77,182,172,0.35); }
 .stat-card.ship { border-color: rgba(76,175,80,0.35); }
 .stat-card.purchase { border-color: rgba(142,36,170,0.4); }
+.stat-card.budget { border-color: rgba(255,179,0,0.5); }
 .stat-card.coupon { border-color: rgba(171,71,188,0.4); }
 .stat-card.aftersale { border-color: rgba(255,204,128,0.4); }
 .s-num.recon-n { color: #4db6ac; }
